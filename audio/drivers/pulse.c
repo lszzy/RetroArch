@@ -1,5 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -22,7 +23,6 @@
 #include <retro_endianness.h>
 
 #include "../audio_driver.h"
-#include "../../configuration.h"
 #include "../../verbosity.h"
 
 typedef struct
@@ -125,6 +125,7 @@ static void stream_latency_update_cb(pa_stream *s, void *data)
 
 static void underrun_update_cb(pa_stream *s, void *data)
 {
+#if 0
    pa_t *pa = (pa_t*)data;
 
    (void)s;
@@ -132,6 +133,7 @@ static void underrun_update_cb(pa_stream *s, void *data)
    RARCH_LOG("[PulseAudio]: Underrun (Buffer: %u, Writable size: %u).\n",
          (unsigned)pa->buffer_size,
          (unsigned)pa_stream_writable_size(pa->stream));
+#endif
 }
 
 static void buffer_attr_cb(pa_stream *s, void *data)
@@ -141,19 +143,23 @@ static void buffer_attr_cb(pa_stream *s, void *data)
    if (server_attr)
       pa->buffer_size = server_attr->tlength;
 
+#if 0
    RARCH_LOG("[PulseAudio]: Got new buffer size %u.\n", (unsigned)pa->buffer_size);
+#endif
 }
 
-static void *pulse_init(const char *device, unsigned rate, unsigned latency)
+static void *pulse_init(const char *device, unsigned rate,
+      unsigned latency, 
+      unsigned block_frames,
+      unsigned *new_rate)
 {
-   pa_sample_spec spec;
-   pa_t *pa;
-   pa_buffer_attr buffer_attr = {0};
+   pa_sample_spec               spec;
+   pa_buffer_attr        buffer_attr = {0};
    const pa_buffer_attr *server_attr = NULL;
+   pa_t                          *pa = (pa_t*)calloc(1, sizeof(*pa));
 
    memset(&spec, 0, sizeof(spec));
-   
-   pa = (pa_t*)calloc(1, sizeof(*pa));
+
    if (!pa)
       goto error;
 
@@ -179,11 +185,11 @@ static void *pulse_init(const char *device, unsigned rate, unsigned latency)
    if (pa_context_get_state(pa->context) != PA_CONTEXT_READY)
       goto unlock_error;
 
-   spec.format = is_little_endian() ? PA_SAMPLE_FLOAT32LE : PA_SAMPLE_FLOAT32BE;
+   spec.format   = is_little_endian() ? PA_SAMPLE_FLOAT32LE : PA_SAMPLE_FLOAT32BE;
    spec.channels = 2;
-   spec.rate = rate;
+   spec.rate     = rate;
 
-   pa->stream = pa_stream_new(pa->context, "audio", &spec, NULL);
+   pa->stream    = pa_stream_new(pa->context, "audio", &spec, NULL);
    if (!pa->stream)
       goto unlock_error;
 
@@ -194,12 +200,13 @@ static void *pulse_init(const char *device, unsigned rate, unsigned latency)
    pa_stream_set_buffer_attr_callback(pa->stream, buffer_attr_cb, pa);
 
    buffer_attr.maxlength = -1;
-   buffer_attr.tlength = pa_usec_to_bytes(latency * PA_USEC_PER_MSEC, &spec);
-   buffer_attr.prebuf = -1;
-   buffer_attr.minreq = -1;
-   buffer_attr.fragsize = -1;
+   buffer_attr.tlength   = pa_usec_to_bytes(latency * PA_USEC_PER_MSEC, &spec);
+   buffer_attr.prebuf    = -1;
+   buffer_attr.minreq    = -1;
+   buffer_attr.fragsize  = -1;
 
-   if (pa_stream_connect_playback(pa->stream, NULL, &buffer_attr, PA_STREAM_ADJUST_LATENCY, NULL, NULL) < 0)
+   if (pa_stream_connect_playback(pa->stream, NULL,
+            &buffer_attr, PA_STREAM_ADJUST_LATENCY, NULL, NULL) < 0)
       goto error;
 
    pa_threaded_mainloop_wait(pa->mainloop);
@@ -231,9 +238,9 @@ error:
 
 static ssize_t pulse_write(void *data, const void *buf_, size_t size)
 {
-   pa_t *pa = (pa_t*)data;
+   pa_t           *pa = (pa_t*)data;
    const uint8_t *buf = (const uint8_t*)buf_;
-   size_t written = 0;
+   size_t     written = 0;
 
    pa_threaded_mainloop_lock(pa->mainloop);
    while (size)
@@ -284,7 +291,7 @@ static bool pulse_alive(void *data)
    return !pa->is_paused;
 }
 
-static bool pulse_start(void *data)
+static bool pulse_start(void *data, bool is_shutdown)
 {
    bool ret;
    pa_t *pa = (pa_t*)data;

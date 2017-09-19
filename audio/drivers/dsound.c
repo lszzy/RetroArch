@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -31,11 +31,11 @@
 
 #include <retro_inline.h>
 #include <retro_miscellaneous.h>
+#include <retro_timers.h>
 #include <rthreads/rthreads.h>
 #include <queues/fifo_queue.h>
 
 #include "../audio_driver.h"
-#include "../../configuration.h"
 #include "../../verbosity.h"
 
 #ifdef _XBOX
@@ -68,7 +68,8 @@ typedef struct dsound
    volatile bool thread_alive;
 } dsound_t;
 
-static INLINE unsigned write_avail(unsigned read_ptr, unsigned write_ptr, unsigned buffer_size)
+static INLINE unsigned write_avail(unsigned read_ptr,
+      unsigned write_ptr, unsigned buffer_size)
 {
    return (read_ptr + buffer_size - write_ptr) % buffer_size;
 }
@@ -91,8 +92,8 @@ struct audio_lock
 static INLINE bool grab_region(dsound_t *ds, uint32_t write_ptr,
       struct audio_lock *region)
 {
-   const char *err;
-   HRESULT res = IDirectSoundBuffer_Lock(ds->dsb, write_ptr, CHUNK_SIZE, 
+   const char *err = NULL;
+   HRESULT     res = IDirectSoundBuffer_Lock(ds->dsb, write_ptr, CHUNK_SIZE, 
          &region->chunk1, &region->size1, &region->chunk2, &region->size2, 0);
 
    if (res == DSERR_BUFFERLOST)
@@ -132,7 +133,8 @@ static INLINE bool grab_region(dsound_t *ds, uint32_t write_ptr,
 
 static INLINE void release_region(dsound_t *ds, const struct audio_lock *region)
 {
-   IDirectSoundBuffer_Unlock(ds->dsb, region->chunk1, region->size1, region->chunk2, region->size2);
+   IDirectSoundBuffer_Unlock(ds->dsb, region->chunk1,
+         region->size1, region->chunk2, region->size2);
 }
 
 static void dsound_thread(void *data)
@@ -236,8 +238,9 @@ static bool dsound_start_thread(dsound_t *ds)
 
 static void dsound_clear_buffer(dsound_t *ds)
 {
-   void *ptr;
    DWORD size;
+   void *ptr  = NULL;
+
    IDirectSoundBuffer_SetCurrentPosition(ds->dsb, 0);
 
    if (IDirectSoundBuffer_Lock(ds->dsb, 0, 0, &ptr, &size,
@@ -300,7 +303,9 @@ static BOOL CALLBACK enumerate_cb(LPGUID guid, LPCSTR desc, LPCSTR module, LPVOI
    return TRUE;
 }
 
-static void *dsound_init(const char *device, unsigned rate, unsigned latency)
+static void *dsound_init(const char *device, unsigned rate, unsigned latency,
+      unsigned block_frames,
+      unsigned *new_rate)
 {
    WAVEFORMATEX wfx      = {0};
    DSBUFFERDESC bufdesc  = {0};
@@ -317,7 +322,11 @@ static void *dsound_init(const char *device, unsigned rate, unsigned latency)
 
    RARCH_LOG("DirectSound devices:\n");
 #ifndef _XBOX
-   DirectSoundEnumerate(enumerate_cb, &dev);
+#ifdef UNICODE
+   DirectSoundEnumerate((LPDSENUMCALLBACKW)enumerate_cb, &dev);
+#else
+   DirectSoundEnumerate((LPDSENUMCALLBACKA)enumerate_cb, &dev);
+#endif
 #endif
 
    if (DirectSoundCreate(dev.guid, &ds->ds, NULL) != DS_OK)
@@ -377,7 +386,7 @@ static void *dsound_init(const char *device, unsigned rate, unsigned latency)
    return ds;
 
 error:
-   RARCH_ERR("[DirectSound] Error occured in init.\n");
+   RARCH_ERR("[DirectSound] Error occurred in init.\n");
    dsound_free(ds);
    return NULL;
 }
@@ -392,7 +401,7 @@ static bool dsound_stop(void *data)
    return (ds->is_paused) ? true : false;
 }
 
-static bool dsound_start(void *data)
+static bool dsound_start(void *data, bool is_shutdown)
 {
    dsound_t *ds = (dsound_t*)data;
 
@@ -424,8 +433,8 @@ static void dsound_set_nonblock_state(void *data, bool state)
 
 static ssize_t dsound_write(void *data, const void *buf_, size_t size)
 {
-   size_t written = 0;
-   dsound_t *ds = (dsound_t*)data;
+   size_t     written = 0;
+   dsound_t       *ds = (dsound_t*)data;
    const uint8_t *buf = (const uint8_t*)buf_;
 
    if (!ds->thread_alive)

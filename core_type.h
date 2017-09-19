@@ -1,5 +1,5 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -22,7 +22,8 @@ enum rarch_core_type
    CORE_TYPE_DUMMY,
    CORE_TYPE_FFMPEG,
    CORE_TYPE_IMAGEVIEWER,
-   CORE_TYPE_NETRETROPAD
+   CORE_TYPE_NETRETROPAD,
+   CORE_TYPE_VIDEO_PROCESSOR
 };
 
 #endif

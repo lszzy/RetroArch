@@ -1,5 +1,5 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -15,12 +15,14 @@
 
 #include <queues/task_queue.h>
 
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
+
 #include "../menu_driver.h"
-#include "../menu_entry.h"
+#include "../widgets/menu_entry.h"
 #include "../menu_cbs.h"
 #include "../menu_setting.h"
-
-#include "../../runloop.h"
 
 #ifndef BIND_ACTION_SELECT
 #define BIND_ACTION_SELECT(cbs, name) \
@@ -37,6 +39,17 @@ static int action_select_default(const char *path, const char *label, unsigned t
    menu_file_list_cbs_t *cbs  = NULL;
    file_list_t *selection_buf = menu_entries_get_selection_buf_ptr(0);
 
+   entry.path[0]       = '\0';
+   entry.label[0]      = '\0';
+   entry.sublabel[0]   = '\0';
+   entry.value[0]      = '\0';
+   entry.rich_label[0] = '\0';
+   entry.enum_idx      = MSG_UNKNOWN;
+   entry.entry_idx     = 0;
+   entry.idx           = 0;
+   entry.type          = 0;
+   entry.spacing       = 0;
+
    menu_entry_get(&entry, 0, idx, NULL, false);
 
    cbs = menu_entries_get_actiondata_at_offset(selection_buf, idx);
@@ -44,24 +57,27 @@ static int action_select_default(const char *path, const char *label, unsigned t
    if (!cbs)
       return -1;
     
-   switch (menu_setting_get_type(cbs->setting))
+   if (cbs->setting)
    {
-      case ST_BOOL:
-      case ST_INT:
-      case ST_UINT:
-      case ST_FLOAT:
-         action = MENU_ACTION_RIGHT;
-         break;
-      case ST_PATH:
-      case ST_DIR:
-      case ST_ACTION:
-      case ST_STRING:
-      case ST_HEX:
-      case ST_BIND:
-         action = MENU_ACTION_OK;
-         break;
-      default:
-         break;
+      switch (setting_get_type(cbs->setting))
+      {
+         case ST_BOOL:
+         case ST_INT:
+         case ST_UINT:
+         case ST_FLOAT:
+            action = MENU_ACTION_RIGHT;
+            break;
+         case ST_PATH:
+         case ST_DIR:
+         case ST_ACTION:
+         case ST_STRING:
+         case ST_HEX:
+         case ST_BIND:
+            action = MENU_ACTION_OK;
+            break;
+         default:
+            break;
+      }
    }
     
    if (action == MENU_ACTION_NOOP)
@@ -78,9 +94,9 @@ static int action_select_default(const char *path, const char *label, unsigned t
    }
     
    if (action != MENU_ACTION_NOOP)
-       ret = menu_entry_action(&entry, idx, action);
+       ret = menu_entry_action(&entry, (unsigned)idx, action);
 
-   task_queue_ctl(TASK_QUEUE_CTL_CHECK, NULL);
+   task_queue_check();
     
    return ret;
 }
@@ -89,12 +105,6 @@ static int action_select_path_use_directory(const char *path,
       const char *label, unsigned type, size_t idx)
 {
    return action_ok_path_use_directory(path, label, type, idx, 0 /* unused */);
-}
-
-static int action_select_directory(const char *path, const char *label, unsigned type,
-      size_t idx)
-{
-   return action_ok_directory_push(path, label, type, idx, 0 /* ignored */);
 }
 
 static int action_select_driver_setting(const char *path, const char *label, unsigned type,
@@ -135,6 +145,12 @@ static int action_select_input_desc(const char *path, const char *label, unsigne
    return action_right_input_desc(type, label, true);
 }
 
+static int action_select_input_desc_kbd(const char *path, const char *label, unsigned type,
+   size_t idx)
+{
+   return action_right_input_desc_kbd(type, label, true);
+}
+
 static int menu_cbs_init_bind_select_compare_type(
       menu_file_list_cbs_t *cbs, unsigned type)
 {
@@ -160,13 +176,17 @@ static int menu_cbs_init_bind_select_compare_type(
    {
       BIND_ACTION_SELECT(cbs, action_select_input_desc);
    }
+#ifdef HAVE_KEYMAPPER
+   else if (type >= MENU_SETTINGS_INPUT_DESC_KBD_BEGIN
+         && type <= MENU_SETTINGS_INPUT_DESC_KBD_END)
+   {
+      BIND_ACTION_SELECT(cbs, action_select_input_desc_kbd);
+   }
+#endif
    else
    {
       switch (type)
       {
-         case FILE_TYPE_DIRECTORY:
-            BIND_ACTION_SELECT(cbs, action_select_directory);
-            break;
          case FILE_TYPE_USE_DIRECTORY:
             BIND_ACTION_SELECT(cbs, action_select_path_use_directory);
             break;
@@ -179,15 +199,13 @@ static int menu_cbs_init_bind_select_compare_type(
 }
 
 static int menu_cbs_init_bind_select_compare_label(menu_file_list_cbs_t *cbs,
-      const char *label, uint32_t hash, const char *elem0)
+      const char *label)
 {
    return -1;
 }
 
 int menu_cbs_init_bind_select(menu_file_list_cbs_t *cbs,
-      const char *path, const char *label, unsigned type, size_t idx,
-      const char *elem0, const char *elem1,
-      uint32_t label_hash, uint32_t menu_label_hash)
+      const char *path, const char *label, unsigned type, size_t idx)
 {
    if (!cbs)
       return -1;
@@ -196,7 +214,7 @@ int menu_cbs_init_bind_select(menu_file_list_cbs_t *cbs,
 
    if (cbs->setting)
    {
-      uint64_t flags = menu_setting_get_flags(cbs->setting);
+      uint64_t flags = cbs->setting->flags;
 
       if (flags & SD_FLAG_IS_DRIVER)
       {
@@ -211,7 +229,7 @@ int menu_cbs_init_bind_select(menu_file_list_cbs_t *cbs,
       return 0;
    }
 
-   if (menu_cbs_init_bind_select_compare_label(cbs, label, label_hash, elem0) == 0)
+   if (menu_cbs_init_bind_select_compare_label(cbs, label) == 0)
       return 0;
 
    if (menu_cbs_init_bind_select_compare_type(cbs, type) == 0)

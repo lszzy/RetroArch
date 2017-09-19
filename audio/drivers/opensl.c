@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -22,7 +22,6 @@
 #include <rthreads/rthreads.h>
 
 #include "../audio_driver.h"
-#include "../../configuration.h"
 
 /* Helper macros, COM-style. */
 #define SLObjectItf_Realize(a, ...) ((*(a))->Realize(a, __VA_ARGS__))
@@ -98,31 +97,26 @@ static void sl_free(void *data)
    free(sl);
 }
 
-static void *sl_init(const char *device, unsigned rate, unsigned latency)
+static void *sl_init(const char *device, unsigned rate, unsigned latency,
+      unsigned block_frames,
+      unsigned *new_rate)
 {
    unsigned i;
-   SLInterfaceID id;
-   SLboolean req;
-   SLresult res;
-   sl_t *sl;
-   SLDataFormat_PCM fmt_pcm = {0};
-   SLDataSource audio_src   = {0};
-   SLDataSink audio_sink    = {0};
+   SLDataFormat_PCM fmt_pcm                        = {0};
+   SLDataSource audio_src                          = {0};
+   SLDataSink audio_sink                           = {0};
    SLDataLocator_AndroidSimpleBufferQueue loc_bufq = {0};
    SLDataLocator_OutputMix loc_outmix              = {0};
-   settings_t *settings = config_get_ptr();
+   SLresult res                                    = 0;
+   SLInterfaceID                                id = SL_IID_ANDROIDSIMPLEBUFFERQUEUE;
+   SLboolean                                req    = SL_BOOLEAN_TRUE;
+   sl_t                                        *sl = (sl_t*)calloc(1, sizeof(sl_t));
 
    (void)device;
-
-   id = SL_IID_ANDROIDSIMPLEBUFFERQUEUE;
-   req    = SL_BOOLEAN_TRUE;
-
-   res = 0;
-   sl = (sl_t*)calloc(1, sizeof(sl_t));
    if (!sl)
       goto error;
 
-   RARCH_LOG("[SLES]: Requested audio latency: %u ms.", latency);
+   RARCH_LOG("[OpenSL]: Requested audio latency: %u ms.", latency);
 
    GOTO_IF_FAIL(slCreateEngine(&sl->engine_object, 0, NULL, 0, NULL, NULL));
    GOTO_IF_FAIL(SLObjectItf_Realize(sl->engine_object, SL_BOOLEAN_FALSE));
@@ -131,15 +125,15 @@ static void *sl_init(const char *device, unsigned rate, unsigned latency)
    GOTO_IF_FAIL(SLEngineItf_CreateOutputMix(sl->engine, &sl->output_mix, 0, NULL, NULL));
    GOTO_IF_FAIL(SLObjectItf_Realize(sl->output_mix, SL_BOOLEAN_FALSE));
 
-   if (settings->audio.block_frames)
-      sl->buf_size = settings->audio.block_frames * 4;
+   if (block_frames)
+      sl->buf_size  = block_frames * 4;
    else
-      sl->buf_size = next_pow2(32 * latency);
+      sl->buf_size  = next_pow2(32 * latency);
 
-   sl->buf_count = (latency * 4 * rate + 500) / 1000;
-   sl->buf_count = (sl->buf_count + sl->buf_size / 2) / sl->buf_size;
+   sl->buf_count    = (latency * 4 * rate + 500) / 1000;
+   sl->buf_count    = (sl->buf_count + sl->buf_size / 2) / sl->buf_size;
 
-   sl->buffer = (uint8_t**)calloc(sizeof(uint8_t*), sl->buf_count);
+   sl->buffer       = (uint8_t**)calloc(sizeof(uint8_t*), sl->buf_count);
    if (!sl->buffer)
       goto error;
 
@@ -150,27 +144,27 @@ static void *sl_init(const char *device, unsigned rate, unsigned latency)
    for (i = 0; i < sl->buf_count; i++)
       sl->buffer[i] = sl->buffer_chunk + i * sl->buf_size;
 
-   RARCH_LOG("[SLES]: Setting audio latency: Block size = %u, Blocks = %u, Total = %u ...\n",
+   RARCH_LOG("[OpenSL]: Setting audio latency: Block size = %u, Blocks = %u, Total = %u ...\n",
          sl->buf_size, sl->buf_count, sl->buf_size * sl->buf_count);
 
-   fmt_pcm.formatType    = SL_DATAFORMAT_PCM;
-   fmt_pcm.numChannels   = 2;
-   fmt_pcm.samplesPerSec = rate * 1000; // Samplerate is in milli-Hz.
-   fmt_pcm.bitsPerSample = 16;
-   fmt_pcm.containerSize = 16;
-   fmt_pcm.channelMask   = SL_SPEAKER_FRONT_LEFT | SL_SPEAKER_FRONT_RIGHT;
-   fmt_pcm.endianness    = SL_BYTEORDER_LITTLEENDIAN; /* Android only. */
+   fmt_pcm.formatType     = SL_DATAFORMAT_PCM;
+   fmt_pcm.numChannels    = 2;
+   fmt_pcm.samplesPerSec  = rate * 1000; // Samplerate is in milli-Hz.
+   fmt_pcm.bitsPerSample  = 16;
+   fmt_pcm.containerSize  = 16;
+   fmt_pcm.channelMask    = SL_SPEAKER_FRONT_LEFT | SL_SPEAKER_FRONT_RIGHT;
+   fmt_pcm.endianness     = SL_BYTEORDER_LITTLEENDIAN; /* Android only. */
 
-   audio_src.pLocator = &loc_bufq;
-   audio_src.pFormat  = &fmt_pcm;
+   audio_src.pLocator     = &loc_bufq;
+   audio_src.pFormat      = &fmt_pcm;
 
-   loc_bufq.locatorType = SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE;
-   loc_bufq.numBuffers  = sl->buf_count;
+   loc_bufq.locatorType   = SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE;
+   loc_bufq.numBuffers    = sl->buf_count;
 
    loc_outmix.locatorType = SL_DATALOCATOR_OUTPUTMIX;
    loc_outmix.outputMix   = sl->output_mix;
 
-   audio_sink.pLocator = &loc_outmix;
+   audio_sink.pLocator    = &loc_outmix;
 
    GOTO_IF_FAIL(SLEngineItf_CreateAudioPlayer(sl->engine, &sl->buffer_queue_object,
             &audio_src, &audio_sink,
@@ -180,14 +174,15 @@ static void *sl_init(const char *device, unsigned rate, unsigned latency)
    GOTO_IF_FAIL(SLObjectItf_GetInterface(sl->buffer_queue_object, SL_IID_ANDROIDSIMPLEBUFFERQUEUE,
             &sl->buffer_queue));
 
-   sl->cond = scond_new();
-   sl->lock = slock_new();
+   sl->cond               = scond_new();
+   sl->lock               = slock_new();
 
    (*sl->buffer_queue)->RegisterCallback(sl->buffer_queue, opensl_callback, sl);
 
    /* Enqueue a bit to get stuff rolling. */
-   sl->buffered_blocks = sl->buf_count;
-   sl->buffer_index = 0;
+   sl->buffered_blocks    = sl->buf_count;
+   sl->buffer_index       = 0;
+
    for (i = 0; i < sl->buf_count; i++)
       (*sl->buffer_queue)->Enqueue(sl->buffer_queue, sl->buffer[i], sl->buf_size);
 
@@ -197,15 +192,17 @@ static void *sl_init(const char *device, unsigned rate, unsigned latency)
    return sl;
 
 error:
-   RARCH_ERR("Couldn't initialize OpenSL ES driver, error code: [%d].\n", (int)res);
+   RARCH_ERR("[OpenSL]: Couldn't initialize OpenSL ES driver, error code: [%d].\n", (int)res);
    sl_free(sl);
    return NULL;
 }
 
 static bool sl_stop(void *data)
 {
-   sl_t *sl = (sl_t*)data;
-   sl->is_paused = (SLPlayItf_SetPlayState(sl->player, SL_PLAYSTATE_STOPPED) == SL_RESULT_SUCCESS) ? true : false;
+   sl_t      *sl = (sl_t*)data;
+   sl->is_paused = (SLPlayItf_SetPlayState(sl->player, SL_PLAYSTATE_STOPPED) 
+         == SL_RESULT_SUCCESS) ? true : false;
+
    return sl->is_paused ? true : false;
 }
 
@@ -224,18 +221,19 @@ static void sl_set_nonblock_state(void *data, bool state)
       sl->nonblock = state;
 }
 
-static bool sl_start(void *data)
+static bool sl_start(void *data, bool is_shutdown)
 {
-   sl_t *sl = (sl_t*)data;
-   sl->is_paused = (SLPlayItf_SetPlayState(sl->player, SL_PLAYSTATE_PLAYING) == SL_RESULT_SUCCESS) ? false : true;
+   sl_t      *sl = (sl_t*)data;
+   sl->is_paused = (SLPlayItf_SetPlayState(sl->player, SL_PLAYSTATE_PLAYING)
+         == SL_RESULT_SUCCESS) ? false : true;
    return sl->is_paused ? false : true;
 }
 
 
 static ssize_t sl_write(void *data, const void *buf_, size_t size)
 {
-   sl_t *sl = (sl_t*)data;
-   size_t written = 0;
+   sl_t           *sl = (sl_t*)data;
+   size_t     written = 0;
    const uint8_t *buf = (const uint8_t*)buf_;
 
    while (size)
@@ -268,10 +266,10 @@ static ssize_t sl_write(void *data, const void *buf_, size_t size)
 
       if (sl->buffer_ptr >= sl->buf_size)
       {
-         SLresult res = (*sl->buffer_queue)->Enqueue(sl->buffer_queue, sl->buffer[sl->buffer_index], sl->buf_size);
+         SLresult res     = (*sl->buffer_queue)->Enqueue(sl->buffer_queue, sl->buffer[sl->buffer_index], sl->buf_size);
          sl->buffer_index = (sl->buffer_index + 1) % sl->buf_count;
          __sync_fetch_and_add(&sl->buffered_blocks, 1);
-         sl->buffer_ptr = 0;
+         sl->buffer_ptr   = 0;
 
          if (res != SL_RESULT_SUCCESS)
          {

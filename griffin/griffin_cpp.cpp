@@ -1,5 +1,5 @@
 /* RetroArch - A frontend for libretro.
-* Copyright (C) 2011-2016 - Daniel De Matteis
+* Copyright (C) 2011-2017 - Daniel De Matteis
 *
 * RetroArch is free software: you can redistribute it and/or modify it under the terms
 * of the GNU General Public License as published by the Free Software Found-
@@ -29,48 +29,56 @@
 #ifdef HAVE_VULKAN
 #include "../deps/glslang/glslang.cpp"
 #include "../deps/glslang/glslang_tab.cpp"
-#include "../deps/glslang/glslang/SPIRV/SpvBuilder.cpp"
-#include "../deps/glslang/glslang/SPIRV/SPVRemapper.cpp"
-#include "../deps/glslang/glslang/SPIRV/InReadableOrder.cpp"
+#include "../deps/glslang/glslang/SPIRV/disassemble.cpp"
 #include "../deps/glslang/glslang/SPIRV/doc.cpp"
 #include "../deps/glslang/glslang/SPIRV/GlslangToSpv.cpp"
-#include "../deps/glslang/glslang/SPIRV/disassemble.cpp"
-#include "../deps/glslang/glslang/SPIRV/logger.cpp"
+#include "../deps/glslang/glslang/SPIRV/InReadableOrder.cpp"
+#include "../deps/glslang/glslang/SPIRV/Logger.cpp"
+#include "../deps/glslang/glslang/SPIRV/SpvBuilder.cpp"
+#include "../deps/glslang/glslang/SPIRV/SPVRemapper.cpp"
+
+#include "../deps/glslang/glslang/glslang/GenericCodeGen/CodeGen.cpp"
 #include "../deps/glslang/glslang/glslang/GenericCodeGen/Link.cpp"
-#include "../deps/glslang/glslang/glslang/GenericCodeGen/CodeGen.cpp"
-#include "../deps/glslang/glslang/hlsl/hlslGrammar.cpp"
-#include "../deps/glslang/glslang/hlsl/hlslOpMap.cpp"
-#include "../deps/glslang/glslang/hlsl/hlslTokenStream.cpp"
-#include "../deps/glslang/glslang/hlsl/hlslScanContext.cpp"
-#include "../deps/glslang/glslang/hlsl/hlslParseHelper.cpp"
-#include "../deps/glslang/glslang/hlsl/hlslParseables.cpp"
-#include "../deps/glslang/glslang/glslang/GenericCodeGen/CodeGen.cpp"
+
 #include "../deps/glslang/glslang/OGLCompilersDLL/InitializeDll.cpp"
-#include "../deps/glslang/glslang/glslang/MachineIndependent/Intermediate.cpp"
-#include "../deps/glslang/glslang/glslang/MachineIndependent/propagateNoContraction.cpp"
-#include "../deps/glslang/glslang/glslang/MachineIndependent/Versions.cpp"
-#include "../deps/glslang/glslang/glslang/MachineIndependent/RemoveTree.cpp"
-#include "../deps/glslang/glslang/glslang/MachineIndependent/limits.cpp"
-#include "../deps/glslang/glslang/glslang/MachineIndependent/intermOut.cpp"
-#include "../deps/glslang/glslang/glslang/MachineIndependent/Initialize.cpp"
-#include "../deps/glslang/glslang/glslang/MachineIndependent/SymbolTable.cpp"
-#include "../deps/glslang/glslang/glslang/MachineIndependent/parseConst.cpp"
-#include "../deps/glslang/glslang/glslang/MachineIndependent/ParseHelper.cpp"
-#include "../deps/glslang/glslang/glslang/MachineIndependent/ShaderLang.cpp"
-#include "../deps/glslang/glslang/glslang/MachineIndependent/IntermTraverse.cpp"
-#include "../deps/glslang/glslang/glslang/MachineIndependent/InfoSink.cpp"
+
 #include "../deps/glslang/glslang/glslang/MachineIndependent/Constant.cpp"
-#include "../deps/glslang/glslang/glslang/MachineIndependent/Scan.cpp"
-#include "../deps/glslang/glslang/glslang/MachineIndependent/reflection.cpp"
+#include "../deps/glslang/glslang/glslang/MachineIndependent/glslang_tab.cpp"
+#include "../deps/glslang/glslang/glslang/MachineIndependent/InfoSink.cpp"
+#include "../deps/glslang/glslang/glslang/MachineIndependent/Initialize.cpp"
+#include "../deps/glslang/glslang/glslang/MachineIndependent/Intermediate.cpp"
+#include "../deps/glslang/glslang/glslang/MachineIndependent/intermOut.cpp"
+#include "../deps/glslang/glslang/glslang/MachineIndependent/IntermTraverse.cpp"
+#include "../deps/glslang/glslang/glslang/MachineIndependent/iomapper.cpp"
+#include "../deps/glslang/glslang/glslang/MachineIndependent/limits.cpp"
 #include "../deps/glslang/glslang/glslang/MachineIndependent/linkValidate.cpp"
+#include "../deps/glslang/glslang/glslang/MachineIndependent/parseConst.cpp"
+#include "../deps/glslang/glslang/glslang/MachineIndependent/ParseContextBase.cpp"
+#include "../deps/glslang/glslang/glslang/MachineIndependent/ParseHelper.cpp"
 #include "../deps/glslang/glslang/glslang/MachineIndependent/PoolAlloc.cpp"
+#include "../deps/glslang/glslang/glslang/MachineIndependent/propagateNoContraction.cpp"
+#include "../deps/glslang/glslang/glslang/MachineIndependent/reflection.cpp"
+#include "../deps/glslang/glslang/glslang/MachineIndependent/RemoveTree.cpp"
+#include "../deps/glslang/glslang/glslang/MachineIndependent/Scan.cpp"
+#include "../deps/glslang/glslang/glslang/MachineIndependent/ShaderLang.cpp"
+#include "../deps/glslang/glslang/glslang/MachineIndependent/SymbolTable.cpp"
+#include "../deps/glslang/glslang/glslang/MachineIndependent/Versions.cpp"
+
+#include "../deps/glslang/glslang/glslang/MachineIndependent/preprocessor/Pp.cpp"
 #include "../deps/glslang/glslang/glslang/MachineIndependent/preprocessor/PpAtom.cpp"
 #include "../deps/glslang/glslang/glslang/MachineIndependent/preprocessor/PpContext.cpp"
 #include "../deps/glslang/glslang/glslang/MachineIndependent/preprocessor/PpMemory.cpp"
-#include "../deps/glslang/glslang/glslang/MachineIndependent/preprocessor/PpTokens.cpp"
 #include "../deps/glslang/glslang/glslang/MachineIndependent/preprocessor/PpScanner.cpp"
 #include "../deps/glslang/glslang/glslang/MachineIndependent/preprocessor/PpSymbols.cpp"
-#include "../deps/glslang/glslang/glslang/MachineIndependent/preprocessor/Pp.cpp"
+#include "../deps/glslang/glslang/glslang/MachineIndependent/preprocessor/PpTokens.cpp"
+
+#include "../deps/glslang/glslang/hlsl/hlslAttributes.cpp"
+#include "../deps/glslang/glslang/hlsl/hlslGrammar.cpp"
+#include "../deps/glslang/glslang/hlsl/hlslOpMap.cpp"
+#include "../deps/glslang/glslang/hlsl/hlslParseables.cpp"
+#include "../deps/glslang/glslang/hlsl/hlslParseHelper.cpp"
+#include "../deps/glslang/glslang/hlsl/hlslScanContext.cpp"
+#include "../deps/glslang/glslang/hlsl/hlslTokenStream.cpp"
 
 #ifdef _WIN32
 #include "../deps/glslang/glslang/glslang/OSDependent/Windows/ossource.cpp"
@@ -89,33 +97,6 @@ AUDIO
 #include "../audio/drivers/xaudio.cpp"
 #endif
 
-
-/*============================================================
- KEYBOARD EVENT
- ============================================================ */
-#if defined(_WIN32) && !defined(_XBOX)
-#include "../input/drivers_keyboard/keyboard_event_win32.cpp"
-#endif
-
-/*============================================================
-UI COMMON CONTEXT
-============================================================ */
-#if defined(_WIN32) && !defined(_XBOX)
-#include "../gfx/common/win32_common.cpp"
-
-#if defined(HAVE_OPENGL) || defined(HAVE_VULKAN)
-#include "../gfx/drivers_context/wgl_ctx.cpp"
-#endif
-
-#if defined(HAVE_FFMPEG)
-#if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES3)
-#include "../cores/libretro-ffmpeg/fft/fft.cpp"
-#endif
-#endif
-
-#endif
-
-
 /*============================================================
 MENU
 ============================================================ */
@@ -133,6 +114,10 @@ VIDEO CONTEXT
 
 #if defined(HAVE_D3D)
 #include "../gfx/drivers_context/d3d_ctx.cpp"
+
+#ifdef HAVE_HLSL
+#include "../gfx/drivers_shader/shader_hlsl.cpp"
+#endif
 #endif
 
 /*============================================================
@@ -152,6 +137,10 @@ UI
 #include "../ui/drivers/qt/ui_qt_application.cpp"
 #endif
 
+#if defined(HAVE_QT_WRAPPER)
+#include "../ui/drivers/ui_qt.cpp"
+#endif
+
 /*============================================================
 VIDEO DRIVER
 ============================================================ */
@@ -161,13 +150,23 @@ VIDEO DRIVER
 
 #if defined(HAVE_D3D)
 #include "../gfx/common/d3d_common.cpp"
-#include "../gfx/d3d/d3d.cpp"
-#ifdef _XBOX
-#include "../gfx/d3d/render_chain_xdk.cpp"
+#include "../gfx/drivers/d3d.cpp"
+
+
+#if defined(HAVE_D3D8)
+#include "../gfx/drivers_renderchain/d3d8_renderchain.cpp"
+#elif defined(HAVE_D3D9)
+
+#ifdef HAVE_HLSL
+#include "../gfx/drivers_renderchain/d3d9_hlsl_renderchain.cpp"
 #endif
+
 #ifdef HAVE_CG
-#include "../gfx/d3d/render_chain_cg.cpp"
+#include "../gfx/drivers_renderchain/d3d9_cg_renderchain.cpp"
 #endif
+
+#endif
+
 #endif
 
 #ifdef HAVE_VULKAN
@@ -175,6 +174,7 @@ VIDEO DRIVER
 #include "../gfx/drivers_shader/glslang_util.cpp"
 #include "../gfx/drivers_shader/slang_reflection.cpp"
 #include "../deps/SPIRV-Cross/spirv_cross.cpp"
+#include "../deps/SPIRV-Cross/spirv_cfg.cpp"
 #endif
 
 /*============================================================

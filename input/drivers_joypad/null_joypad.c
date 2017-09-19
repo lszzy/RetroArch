@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *  Copyright (C) 2013-2014 - CatalystG
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
@@ -18,7 +18,8 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <boolean.h>
-#include "../input_joypad_driver.h"
+
+#include "../input_driver.h"
 
 static const char *null_joypad_name(unsigned pad)
 {

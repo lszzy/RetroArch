@@ -25,7 +25,7 @@ import sys
 import os
 import re
 
-banned_ext = [ 'AMD', 'APPLE', 'EXT', 'NV', 'NVX', 'ATI', '3DLABS', 'SUN', 'SGI', 'SGIX', 'SGIS', 'INTEL', '3DFX', 'IBM', 'MESA', 'GREMEDY', 'OML', 'PGI', 'I3D', 'INGL', 'MTX', 'QCOM', 'IMG', 'ANGLE', 'SUNX', 'INGR' ]
+banned_ext = [ 'AMD', 'APPLE', 'NV', 'NVX', 'ATI', '3DLABS', 'SUN', 'SGI', 'SGIX', 'SGIS', 'INTEL', '3DFX', 'IBM', 'MESA', 'GREMEDY', 'OML', 'PGI', 'I3D', 'INGL', 'MTX', 'QCOM', 'IMG', 'ANGLE', 'SUNX', 'INGR' ]
 
 def noext(sym):
    for ext in banned_ext:
@@ -107,13 +107,6 @@ if __name__ == '__main__':
       f.write('typedef GLint GLfixed;\n')
       f.write('#endif\n')
 
-      f.write('#if defined(OSX) && !defined(MAC_OS_X_VERSION_10_7)\n')
-      f.write('typedef long long int GLint64;\n')
-      f.write('typedef unsigned long long int GLuint64;\n')
-      f.write('typedef unsigned long long int GLuint64EXT;\n')
-      f.write('typedef struct __GLsync *GLsync;\n')
-      f.write('#endif\n')
-
       dump(f, typedefs)
       dump(f, overrides)
       dump(f, externs)
@@ -128,7 +121,7 @@ if __name__ == '__main__':
       f.write('#endif\n')
 
    with open(sys.argv[3], 'w') as f:
-      f.write('#include "glsym.h"\n')
+      f.write('#include "glsym/glsym.h"\n')
       f.write('#include <stddef.h>\n')
       f.write('#define SYM(x) { "gl" #x, &(gl##x) }\n')
       f.write('const struct rglgen_sym_map rglgen_symbol_map[] = {\n')

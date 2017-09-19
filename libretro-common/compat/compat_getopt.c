@@ -1,4 +1,4 @@
-/* Copyright  (C) 2010-2015 The RetroArch team
+/* Copyright  (C) 2010-2017 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this file (compat_getopt.c).
@@ -167,11 +167,11 @@ static void shuffle_block(char **begin, char **last, char **end)
 
    retro_assert(tmp);
 
-   memcpy(tmp, begin, len * sizeof(const char*));
+   memcpy((void*)tmp, begin, len * sizeof(const char*));
    memmove(begin, last, (end - last) * sizeof(const char*));
    memcpy(end - len, tmp, len * sizeof(const char*));
 
-   free(tmp);
+   free((void*)tmp);
 }
 
 int getopt_long(int argc, char *argv[],
@@ -184,7 +184,7 @@ int getopt_long(int argc, char *argv[],
    if (optind == 0)
       optind = 1;
 
-   if (argc == 1)
+   if (argc < 2)
       return -1;
 
    short_index = find_short_index(&argv[optind]);

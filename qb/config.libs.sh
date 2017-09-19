@@ -27,22 +27,27 @@ elif [ "$OS" = 'Win32' ]; then
    SOCKETLIB=-lws2_32
    SOCKETHEADER="#include <winsock2.h>"
    DYLIB=
+elif [ "$OS" = 'Cygwin' ]; then
+   echo "Error: Cygwin is not a supported platform. See https://bot.libretro.com/docs/compilation/windows/"
+   exit 1
 fi
 
 add_define_make DYLIB_LIB "$DYLIB"
 
 [ "$OS" = 'Darwin' ] && HAVE_X11=no # X11 breaks on recent OSXes even if present.
-
-[ -d /opt/vc/lib ] && add_library_dirs /opt/vc/lib
-check_lib VIDEOCORE -lbcm_host bcm_host_init "-lvcos -lvchiq_arm"
 check_lib SYSTEMD -lsystemd sd_get_machine_names
+
+if [ "$HAVE_VIDEOCORE" != "no" ]; then
+   [ -d /opt/vc/lib ] && add_library_dirs /opt/vc/lib && add_library_dirs /opt/vc/lib/GL
+   check_lib VIDEOCORE -lbcm_host bcm_host_init "-lvcos -lvchiq_arm"
+fi
 
 if [ "$HAVE_VIDEOCORE" = 'yes' ]; then
    [ -d /opt/vc/include ] && add_include_dirs /opt/vc/include
    [ -d /opt/vc/include/interface/vcos/pthreads ] && add_include_dirs /opt/vc/include/interface/vcos/pthreads
    [ -d /opt/vc/include/interface/vmcs_host/linux ] && add_include_dirs /opt/vc/include/interface/vmcs_host/linux
-   HAVE_GLES='auto'
-   EXTRA_GL_LIBS="-lEGL -lGLESv2 -lbcm_host -lvcos -lvchiq_arm"
+   HAVE_OPENGLES='auto'
+   EXTRA_GL_LIBS="-lbrcmEGL -lbrcmGLESv2 -lbcm_host -lvcos -lvchiq_arm"
 fi
 
 if [ "$HAVE_NEON" = "yes" ]; then
@@ -52,7 +57,7 @@ if [ "$HAVE_NEON" = "yes" ]; then
 fi
 
 if [ "$HAVE_7ZIP" = "yes" ]; then
-   add_include_dirs ./decompress/7zip/
+   add_include_dirs ./deps/7zip/
 fi
 
 if [ "$HAVE_PRESERVE_DYLIB" = "yes" ]; then
@@ -95,7 +100,7 @@ if [ "$HAVE_SSE" = "yes" ]; then
    CXXFLAGS="$CXXFLAGS -msse -msse2"
 fi
 
-if [ "$HAVE_EGL" != "no" ]; then
+if [ "$HAVE_EGL" != "no" -a "$OS" != 'Win32' ]; then
    check_pkgconf EGL egl
    # some systems have EGL libs, but no pkgconfig
    if [ "$HAVE_EGL" = "no" ]; then
@@ -106,7 +111,7 @@ if [ "$HAVE_EGL" != "no" ]; then
    fi
 fi
 
-if [ "HAVE_SSA" != "no" ]; then
+if [ "$HAVE_SSA" != "no" ]; then
    check_lib SSA -lass ass_library_init
 fi
 
@@ -126,9 +131,22 @@ else LIBRETRO="-lretro"
 fi
 
 [ "$HAVE_DYNAMIC" = 'yes' ] || {
-   check_lib_cxx RETRO "$LIBRETRO" retro_init "$DYLIB" "Cannot find libretro."
+   #check_lib RETRO "$LIBRETRO" retro_init "$DYLIB" "Cannot find libretro, did you forget --with-libretro=\"-lretro\"?"
+   check_lib RETRO "$LIBRETRO" "$DYLIB" "Cannot find libretro, did you forget --with-libretro=\"-lretro\"?"
    add_define_make libretro "$LIBRETRO"
 }
+
+if [ "$ASSETS_DIR" ]; then
+   add_define_make ASSETS_DIR "$ASSETS_DIR"
+else
+   add_define_make ASSETS_DIR "${PREFIX}/share"
+fi
+
+if [ "$BIN_DIR" ]; then
+   add_define_make BIN_DIR "$BIN_DIR"
+else
+   add_define_make BIN_DIR "${PREFIX}/bin"
+fi
 
 if [ "$MAN_DIR" ]; then
    add_define_make MAN_DIR "$MAN_DIR"
@@ -136,11 +154,24 @@ else
    add_define_make MAN_DIR "${PREFIX}/share/man"
 fi
 
+if [ "$OS" = 'DOS' ]; then
+   HAVE_SHADERPIPELINE=no
+   HAVE_LANGEXTRA=no
+fi
+
 if [ "$OS" = 'Win32' ]; then
    HAVE_THREADS=yes
+   HAVE_THREAD_STORAGE=yes
    HAVE_DYLIB=yes
 else
    check_lib THREADS "$PTHREADLIB" pthread_create
+
+   if [ "$HAVE_THREADS" = 'yes' ]; then
+      check_lib THREAD_STORAGE "$PTHREADLIB" pthread_key_create
+   else
+      HAVE_THREAD_STORAGE=no
+   fi
+
    check_lib DYLIB "$DYLIB" dlopen
 fi
 
@@ -163,12 +194,18 @@ if [ "$HAVE_NETWORKING" = 'yes' ]; then
    HAVE_NETWORK_CMD=yes
    HAVE_NETWORKGAMEPAD=yes
 
-   [ "$HAVE_NETPLAY" != 'no' ] && HAVE_NETPLAY='yes'
+   if [ "$HAVE_MINIUPNPC" != "no" ]; then
+      check_lib MINIUPNPC "-lminiupnpc"
+   fi
+
+   if [ "$HAVE_BUILTINMINIUPNPC" = "yes" ]; then
+      HAVE_MINIUPNPC='yes'
+   fi
 else
    echo "Warning: All networking features have been disabled."
    HAVE_NETWORK_CMD='no'
-   HAVE_NETPLAY='no'
    HAVE_NETWORKGAMEPAD='no'
+   HAVE_CHEEVOS='no'
 fi
 
 check_lib STDIN_CMD "$CLIB" fcntl
@@ -187,9 +224,14 @@ if [ "$HAVE_DYLIB" = 'no' ] && [ "$HAVE_DYNAMIC" = 'yes' ]; then
 fi
 
 check_pkgconf ALSA alsa
+check_lib CACA -lcaca
 check_header OSS sys/soundcard.h
 check_header OSS_BSD soundcard.h
 check_lib OSS_LIB -lossaudio
+
+if [ "$OS" = 'Linux' ]; then
+	HAVE_TINYALSA=yes
+fi
 
 if [ "$OS" = 'Darwin' ]; then
    check_lib AL "-framework OpenAL" alcOpenDevice
@@ -238,12 +280,13 @@ if [ "$OS" = 'Win32' ]; then
       HAVE_XINPUT=yes
    fi
 
+   HAVE_WASAPI=yes
    HAVE_XAUDIO=yes
 else
    HAVE_D3D9=no
 fi
 
-if [ "$HAVE_OPENGL" != 'no' ] && [ "$HAVE_GLES" != 'yes' ]; then
+if [ "$HAVE_OPENGL" != 'no' ] && [ "$HAVE_OPENGLES" != 'yes' ]; then
    if [ "$OS" = 'Darwin' ]; then
       check_header OPENGL "OpenGL/gl.h"
       check_lib OPENGL "-framework OpenGL"
@@ -270,23 +313,30 @@ if [ "$HAVE_OPENGL" != 'no' ] && [ "$HAVE_GLES" != 'yes' ]; then
 
       # fix undefined variables
       PKG_CONF_USED="$PKG_CONF_USED CG"
+
+      check_pkgconf OSMESA osmesa
    else
       echo "Notice: Ignoring Cg. Desktop OpenGL is not enabled."
       HAVE_CG='no'
    fi
 fi
 
-if [ "$OS" = 'Darwin' ]; then
-   check_lib ZLIB "-lz"
-else
+if [ "$HAVE_ZLIB" != 'no' ]; then
    check_pkgconf ZLIB zlib
+
+   if [ "$HAVE_ZLIB" = 'no' ]; then
+      HAVE_ZLIB='auto'
+      check_lib ZLIB '-lz'
+   fi
 fi
 
 if [ "$HAVE_THREADS" != 'no' ]; then
    if [ "$HAVE_FFMPEG" != 'no' ]; then
       check_pkgconf AVCODEC libavcodec 54
       check_pkgconf AVFORMAT libavformat 54
+      check_pkgconf AVDEVICE libavdevice
       check_pkgconf SWRESAMPLE libswresample
+      check_pkgconf AVRESAMPLE libavresample
       check_pkgconf AVUTIL libavutil 51
       check_pkgconf SWSCALE libswscale 2.1
       check_header AV_CHANNEL_LAYOUT libavutil/channel_layout.h
@@ -294,7 +344,7 @@ if [ "$HAVE_THREADS" != 'no' ]; then
       HAVE_FFMPEG='yes'
       if [ "$HAVE_AVCODEC" = 'no' ] || [ "$HAVE_SWRESAMPLE" = 'no' ] || [ "$HAVE_AVFORMAT" = 'no' ] || [ "$HAVE_AVUTIL" = 'no' ] || [ "$HAVE_SWSCALE" = 'no' ]; then
          HAVE_FFMPEG='no'
-         echo "Notice: FFmpeg recording disabled due to missing or unsuitable packages."
+         echo "Notice: FFmpeg built-in support disabled due to missing or unsuitable packages."
       fi
    fi
 else
@@ -322,14 +372,14 @@ fi
 check_pkgconf LIBXML2 libxml-2.0
 
 if [ "$HAVE_EGL" = "yes" ]; then
-   if [ "$HAVE_GLES" != "no" ]; then
-      if [ "$GLES_LIBS" ] || [ "$GLES_CFLAGS" ]; then
-         echo "Notice: Using custom OpenGLES CFLAGS ($GLES_CFLAGS) and LDFLAGS ($GLES_LIBS)."
-         add_define_make GLES_LIBS "$GLES_LIBS"
-         add_define_make GLES_CFLAGS "$GLES_CFLAGS"
+   if [ "$HAVE_OPENGLES" != "no" ]; then
+      if [ "$OPENGLES_LIBS" ] || [ "$OPENGLES_CFLAGS" ]; then
+         echo "Notice: Using custom OpenGLES CFLAGS ($OPENGLES_CFLAGS) and LDFLAGS ($OPENGLES_LIBS)."
+         add_define_make OPENGLES_LIBS "$OPENGLES_LIBS"
+         add_define_make OPENGLES_CFLAGS "$OPENGLES_CFLAGS"
       else
-         HAVE_GLES=auto check_pkgconf GLES glesv2
-         [ "$HAVE_GLES" = "no" ] && HAVE_GLES=auto check_lib GLES "-lGLESv2 $EXTRA_GL_LIBS" && add_define_make GLES_LIBS "-lGLESv2 $EXTRA_GL_LIBS"
+         HAVE_OPENGLES=auto check_pkgconf OPENGLES glesv2
+         [ "$HAVE_OPENGLES" = "no" ] && HAVE_OPENGLES=auto check_lib OPENGLES "-lGLESv2 $EXTRA_GL_LIBS" && add_define_make OPENGLES_LIBS "-lGLESv2 $EXTRA_GL_LIBS"
       fi
    fi
    if [ "$HAVE_VG" != "no" ]; then
@@ -341,7 +391,7 @@ if [ "$HAVE_EGL" = "yes" ]; then
    fi
 else
    HAVE_VG=no
-   HAVE_GLES=no
+   HAVE_OPENGLES=no
 fi
 
 check_pkgconf V4L2 libv4l2
@@ -351,7 +401,7 @@ if [ "$OS" = 'Darwin' ]; then
 elif [ "$OS" = 'Win32' ]; then
    HAVE_FBO=yes
 else
-   if [ "$HAVE_GLES" = "yes" ]; then
+   if [ "$HAVE_OPENGLES" = "yes" ]; then
       [ $HAVE_FBO != "no" ] && HAVE_FBO=yes
    else
       check_lib FBO -lGL glFramebufferTexture2D
@@ -364,8 +414,10 @@ check_pkgconf XCB xcb
 [ "$HAVE_X11" = "no" ] && HAVE_XEXT=no && HAVE_XF86VM=no && HAVE_XINERAMA=no && HAVE_XSHM=no
 
 check_pkgconf WAYLAND wayland-egl
+check_pkgconf WAYLAND_CURSOR wayland-cursor
 
 check_pkgconf XKBCOMMON xkbcommon 0.3.2
+check_pkgconf DBUS dbus-1
 check_pkgconf XEXT xext
 check_pkgconf XF86VM xxf86vm
 check_pkgconf XINERAMA xinerama
@@ -415,13 +467,23 @@ if [ "$HAVE_MATERIALUI" != 'no' ] || [ "$HAVE_XMB" != 'no' ] || [ "$HAVE_ZARCH" 
 	if [ "$HAVE_RGUI" = 'no' ]; then
 		HAVE_MATERIALUI=no
 		HAVE_XMB=no
-      HAVE_ZARCH=no
+    HAVE_ZARCH=no
 		echo "Notice: RGUI not available, MaterialUI, XMB and ZARCH will also be disabled."
-	elif [ "$HAVE_OPENGL" = 'no' ] && [ "$HAVE_GLES" = 'no' ] && [ "$HAVE_VULKAN" = 'no' ]; then
-		HAVE_MATERIALUI=no
-		HAVE_XMB=no
-      HAVE_ZARCH=no
-		echo "Notice: Hardware rendering context not available, XMB, MaterialUI and ZARCH will also be disabled."
+	elif [ "$HAVE_OPENGL" = 'no' ] && [ "$HAVE_OPENGLES" = 'no' ] && [ "$HAVE_VULKAN" = 'no' ]; then
+    if [ "$OS" = 'Win32' ]; then
+      HAVE_SHADERPIPELINE=no
+      HAVE_VULKAN=no
+		  echo "Notice: Hardware rendering context not available."
+    else
+      if [ "$HAVE_CACA" = 'yes' ]; then
+		    echo "Notice: Hardware rendering context not available."
+      else
+    		HAVE_MATERIALUI=no
+	    	HAVE_XMB=no
+        HAVE_ZARCH=no
+		    echo "Notice: Hardware rendering context not available, XMB, MaterialUI and ZARCH will also be disabled."
+      fi
+    fi
 	fi
 fi
 
@@ -443,6 +505,10 @@ fi
 if [ "$HAVE_THREADS" = 'no' ] && [ "HAVE_LIBUSB" != 'no' ]; then
    HAVE_LIBUSB=no
    echo "Notice: Threads are not available, libusb will also be disabled."
+fi
+
+if [ "$HAVE_V4L2" != 'no' ] && [ "HAVE_VIDEOPROCESSOR" != 'no' ]; then
+   HAVE_VIDEO_PROCESSOR=yes
 fi
 
 # Creates config.mk and config.h.

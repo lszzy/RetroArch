@@ -1,4 +1,4 @@
-/* Copyright  (C) 2010-2016 The RetroArch team
+/* Copyright  (C) 2010-2017 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this file (query.c).
@@ -111,9 +111,8 @@ static struct rmsgpack_dom_value query_func_is_true(
       unsigned argc, const struct argument *argv)
 {
    struct rmsgpack_dom_value res;
-   memset(&res, 0, sizeof(res));
 
-   res.type  = RDT_BOOL;
+   res.type      = RDT_BOOL;
    res.val.bool_ = 0;
 
    if (argc > 0 || input.type != RDT_BOOL)
@@ -130,13 +129,11 @@ static struct rmsgpack_dom_value func_equals(
 {
    struct argument arg;
    struct rmsgpack_dom_value res;
-   memset(&res, 0, sizeof(res));
 
-   res.type = RDT_BOOL;
+   res.type      = RDT_BOOL;
+   res.val.bool_ = 0;
 
-   if (argc != 1)
-      res.val.bool_ = 0;
-   else
+   if (argc == 1)
    {
       arg = argv[0];
 
@@ -152,6 +149,7 @@ static struct rmsgpack_dom_value func_equals(
          res.val.bool_ = (rmsgpack_dom_value_cmp(&input, &arg.a.value) == 0);
       }
    }
+
    return res;
 }
 
@@ -161,9 +159,8 @@ static struct rmsgpack_dom_value query_func_operator_or(
 {
    unsigned i;
    struct rmsgpack_dom_value res;
-   memset(&res, 0, sizeof(res));
 
-   res.type = RDT_BOOL;
+   res.type      = RDT_BOOL;
    res.val.bool_ = 0;
 
    for (i = 0; i < argc; i++)
@@ -192,9 +189,8 @@ static struct rmsgpack_dom_value query_func_operator_and(
 {
    unsigned i;
    struct rmsgpack_dom_value res;
-   memset(&res, 0, sizeof(res));
 
-   res.type = RDT_BOOL;
+   res.type      = RDT_BOOL;
    res.val.bool_ = 0;
 
    for (i = 0; i < argc; i++)
@@ -224,9 +220,7 @@ static struct rmsgpack_dom_value query_func_between(
    struct rmsgpack_dom_value res;
    unsigned i                     = 0;
 
-   memset(&res, 0, sizeof(res));
-
-   res.type = RDT_BOOL;
+   res.type      = RDT_BOOL;
    res.val.bool_ = 0;
 
    (void)i;
@@ -263,9 +257,8 @@ static struct rmsgpack_dom_value query_func_glob(
 {
    struct rmsgpack_dom_value res;
    unsigned i = 0;
-   memset(&res, 0, sizeof(res));
 
-   res.type = RDT_BOOL;
+   res.type      = RDT_BOOL;
    res.val.bool_ = 0;
 
    (void)i;
@@ -298,11 +291,11 @@ static void query_raise_expected_number(ssize_t where, const char **error)
 #ifdef _WIN32
    snprintf(tmp_error_buff, MAX_ERROR_LEN,
          "%I64u::Expected number",
-         (unsigned long long)where);
+         (uint64_t)where);
 #else
    snprintf(tmp_error_buff, MAX_ERROR_LEN,
          "%llu::Expected number",
-         (unsigned long long)where);
+         (uint64_t)where);
 #endif
    *error = tmp_error_buff;
 }
@@ -312,11 +305,11 @@ static void query_raise_expected_string(ssize_t where, const char ** error)
 #ifdef _WIN32
    snprintf(tmp_error_buff, MAX_ERROR_LEN,
          "%I64u::Expected string",
-         (unsigned long long)where);
+         (uint64_t)where);
 #else
    snprintf(tmp_error_buff, MAX_ERROR_LEN,
          "%llu::Expected string",
-         (unsigned long long)where);
+         (uint64_t)where);
 #endif
    *error = tmp_error_buff;
 }
@@ -326,12 +319,12 @@ static void query_raise_unexpected_eof(ssize_t where, const char ** error)
 #ifdef _WIN32
    snprintf(tmp_error_buff, MAX_ERROR_LEN,
          "%I64u::Unexpected EOF",
-         (unsigned long long)where
+         (uint64_t)where
          );
 #else
    snprintf(tmp_error_buff, MAX_ERROR_LEN,
          "%llu::Unexpected EOF",
-         (unsigned long long)where
+         (uint64_t)where
          );
 #endif
    *error = tmp_error_buff;
@@ -349,12 +342,12 @@ static void query_raise_unknown_function(ssize_t where, const char *name,
 #ifdef _WIN32
    int n = snprintf(tmp_error_buff, MAX_ERROR_LEN,
          "%I64u::Unknown function '",
-         (unsigned long long)where
+         (uint64_t)where
          );
 #else
    int n = snprintf(tmp_error_buff, MAX_ERROR_LEN,
          "%llu::Unknown function '",
-         (unsigned long long)where
+         (uint64_t)where
          );
 #endif
 
@@ -371,13 +364,13 @@ static void query_raise_expected_eof(
 #ifdef _WIN32
    snprintf(tmp_error_buff, MAX_ERROR_LEN,
          "%I64u::Expected EOF found '%c'",
-         (unsigned long long)where,
+         (uint64_t)where,
          found
          );
 #else
    snprintf(tmp_error_buff, MAX_ERROR_LEN,
          "%llu::Expected EOF found '%c'",
-         (unsigned long long)where,
+         (uint64_t)where,
          found
          );
 #endif
@@ -391,11 +384,11 @@ static void query_raise_unexpected_char(
 #ifdef _WIN32
    snprintf(tmp_error_buff, MAX_ERROR_LEN,
          "%I64u::Expected '%c' found '%c'",
-         (unsigned long long)where, expected, found);
+         (uint64_t)where, expected, found);
 #else
    snprintf(tmp_error_buff, MAX_ERROR_LEN,
          "%llu::Expected '%c' found '%c'",
-         (unsigned long long)where, expected, found);
+         (uint64_t)where, expected, found);
 #endif
    *error = tmp_error_buff;
 }
@@ -427,11 +420,11 @@ static struct buffer query_parse_integer(struct buffer buff,
 #ifdef _WIN32
    test        = (sscanf(buff.data + buff.offset,
             "%I64d",
-            (signed long long*)&value->val.int_) == 0);
+            (int64_t*)&value->val.int_) == 0);
 #else
    test        = (sscanf(buff.data + buff.offset,
             "%lld",
-            (signed long long*)&value->val.int_) == 0);
+            (int64_t*)&value->val.int_) == 0);
 #endif
 
    if (test)
@@ -532,8 +525,8 @@ static struct buffer query_parse_string(struct buffer buff,
    if (!*error)
    {
       size_t count;
-      value->type = is_binstr ? RDT_BINARY : RDT_STRING;
-      value->val.string.len = (buff.data + buff.offset) - str_start - 1;
+      value->type            = is_binstr ? RDT_BINARY : RDT_STRING;
+      value->val.string.len  = (uint32_t)((buff.data + buff.offset) - str_start - 1);
 
       count                  = is_binstr ? (value->val.string.len + 1) / 2 
          : (value->val.string.len + 1);
@@ -797,11 +790,11 @@ static struct rmsgpack_dom_value query_func_all_map(
    struct rmsgpack_dom_value res;
    struct rmsgpack_dom_value nil_value;
    struct rmsgpack_dom_value *value = NULL;
-   memset(&res, 0, sizeof(res));
+
+   res.type       = RDT_BOOL;
+   res.val.bool_  = 1;
 
    nil_value.type = RDT_NULL;
-   res.type       = RDT_BOOL;
-   res.val.bool_      = 1;
 
    if (argc % 2 != 0)
    {
@@ -873,8 +866,8 @@ static struct buffer query_parse_table(struct buffer buff,
 
          if (!*error)
          {
-            args[argi].a.value.type = RDT_STRING;
-            args[argi].a.value.val.string.len = ident_len;
+            args[argi].a.value.type            = RDT_STRING;
+            args[argi].a.value.val.string.len  = (uint32_t)ident_len;
             args[argi].a.value.val.string.buff = (char*)calloc(
                   ident_len + 1,
                   sizeof(char)
@@ -973,47 +966,47 @@ void libretrodb_query_free(void *q)
 }
 
 void *libretrodb_query_compile(libretrodb_t *db,
-      const char *query, size_t buff_len, const char **error)
+      const char *query, size_t buff_len, const char **error_string)
 {
    struct buffer buff;
    struct query *q = (struct query*)calloc(1, sizeof(*q));
 
    if (!q)
-      goto clean;
+      goto error;
 
-   q->ref_count = 1;
-   buff.data    = query;
-   buff.len     = buff_len;
-   buff.offset  = 0;
-   *error       = NULL;
+   q->ref_count  = 1;
+   buff.data     = query;
+   buff.len      = buff_len;
+   buff.offset   = 0;
+   *error_string = NULL;
 
    buff         = query_chomp(buff);
 
    if (query_peek(buff, "{"))
    {
-      buff = query_parse_table(buff, &q->root, error);
-      if (*error)
-         goto clean;
+      buff = query_parse_table(buff, &q->root, error_string);
+      if (*error_string)
+         goto error;
    }
    else if (isalpha((int)buff.data[buff.offset]))
-      buff = query_parse_method_call(buff, &q->root, error);
+      buff = query_parse_method_call(buff, &q->root, error_string);
 
-   buff = query_expect_eof(buff, error);
-   if (*error)
-      goto clean;
+   buff = query_expect_eof(buff, error_string);
+   if (*error_string)
+      goto error;
 
    if (!q->root.func)
    {
-      query_raise_unexpected_eof(buff.offset, error);
-      libretrodb_query_free(q);
-      return NULL;
+      query_raise_unexpected_eof(buff.offset, error_string);
+      goto error;
    }
-   goto success;
-clean:
+
+   return q;
+
+error:
    if (q)
       libretrodb_query_free(q);
-success:
-   return q;
+   return NULL;
 }
 
 void libretrodb_query_inc_ref(libretrodb_query_t *q)

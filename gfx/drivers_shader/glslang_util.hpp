@@ -1,5 +1,5 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2010-2016 - Hans-Kristian Arntzen
+ *  Copyright (C) 2010-2017 - Hans-Kristian Arntzen
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -63,8 +63,19 @@ enum glslang_format
    SLANG_FORMAT_UNKNOWN
 };
 
+struct glslang_parameter
+{
+   std::string id;
+   std::string desc;
+   float initial;
+   float minimum;
+   float maximum;
+   float step;
+};
+
 struct glslang_meta
 {
+   std::vector<glslang_parameter> parameters;
    std::string name;
    glslang_format rt_format = SLANG_FORMAT_UNKNOWN;
 };
@@ -78,6 +89,10 @@ struct glslang_output
 
 bool glslang_compile_shader(const char *shader_path, glslang_output *output);
 const char *glslang_format_to_string(enum glslang_format fmt);
+
+// Helpers for internal use.
+bool glslang_read_shader_file(const char *path, std::vector<std::string> *output, bool root_file);
+bool glslang_parse_meta(const std::vector<std::string> &lines, glslang_meta *meta);
 
 #endif
 

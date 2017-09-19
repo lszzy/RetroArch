@@ -1,5 +1,5 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -28,6 +28,9 @@
 
 
 static const ui_companion_driver_t *ui_companion_drivers[] = {
+#ifdef HAVE_QT_WRAPPER
+   &ui_companion_qt,
+#endif
 #if defined(_WIN32) && !defined(_XBOX)
    &ui_companion_win32,
 #endif
@@ -88,12 +91,7 @@ bool ui_companion_is_on_foreground(void)
  **/
 const ui_companion_driver_t *ui_companion_init_first(void)
 {
-   unsigned i;
-
-   for (i = 0; ui_companion_drivers[i]; i++)
-      return ui_companion_drivers[i];
-
-   return NULL;
+   return ui_companion_drivers[0];
 }
 
 const ui_companion_driver_t *ui_companion_get_ptr(void)
@@ -127,7 +125,7 @@ void ui_companion_driver_init_first(void)
 
    if (ui_companion && ui_companion->toggle)
    {
-      if (settings->ui.companion_start_on_boot)
+      if (settings->bools.ui_companion_start_on_boot)
          ui_companion->toggle(ui_companion_data);
    }
 }
@@ -208,4 +206,12 @@ void *ui_companion_driver_get_main_window(void)
    if (!ui || !ui->get_main_window)
       return NULL;
    return ui->get_main_window(ui_companion_data);
+}
+
+const char *ui_companion_driver_get_ident(void)
+{
+   const ui_companion_driver_t *ui = ui_companion_get_ptr();
+   if (!ui)
+      return "null";
+   return ui->ident;
 }

@@ -1,7 +1,7 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2011-2016 - Daniel De Matteis
- *  Copyright (C) 2014-2015 - Jean-André Santoni
- *  Copyright (C) 2016      - Andrés Suárez
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
+ *  Copyright (C) 2014-2017 - Jean-André Santoni
+ *  Copyright (C) 2016-2017 - Andrés Suárez
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -23,15 +23,17 @@
 #include <string.h>
 
 #include <file/file_path.h>
+#include <compat/strl.h>
 #include <string/stdstring.h>
 #include <lists/string_list.h>
 
 #include "../../menu_driver.h"
+#include "../../configuration.h"
 
 static char* out;
 static char core[PATH_MAX_LENGTH] = {0};
 static char content[PATH_MAX_LENGTH] = {0};
-float ratio[] = {0.85f, 0.15f};
+float ratio[] = {0.85f, 0.15f, 0.0f}; /* TODO: what should this be? */
 
 void nk_wnd_main(nk_menu_handle_t *nk, const char* title)
 {
@@ -41,6 +43,7 @@ void nk_wnd_main(nk_menu_handle_t *nk, const char* title)
    struct nk_context *ctx = &nk->ctx;
    const int id           = NK_WND_MAIN;
    settings_t *settings  = config_get_ptr();
+   char core_basename[PATH_MAX_LENGTH] = {0};
 
    static char picker_filter[PATH_MAX_LENGTH];
    static char picker_title[PATH_MAX_LENGTH];
@@ -48,8 +51,10 @@ void nk_wnd_main(nk_menu_handle_t *nk, const char* title)
 
    int len_core, len_content = 0;
 
+   strlcpy(core_basename, path_basename(core), sizeof(core_basename));
+
    if (!out)
-      out = &core;
+      out = core;
 
    if (!string_is_empty(core))
       len_core = strlen(path_basename(core));
@@ -66,32 +71,32 @@ void nk_wnd_main(nk_menu_handle_t *nk, const char* title)
    }
 
 
-   if (nk_begin(ctx, &layout, title, nk_rect(240, 10, 600, 400),
+   if (nk_begin(ctx, title, nk_rect(240, 10, 600, 400),
          NK_WINDOW_CLOSABLE|NK_WINDOW_MINIMIZABLE|NK_WINDOW_MOVABLE|
          NK_WINDOW_SCALABLE|NK_WINDOW_BORDER))
    {
       nk_layout_row_dynamic(ctx, 30, 1);
       nk_label(ctx,"Core:", NK_TEXT_LEFT);
       nk_layout_row(ctx, NK_DYNAMIC, 30, 3, ratio);
-      nk_edit_string(ctx, NK_EDIT_SIMPLE, path_basename(core), &len_core, 64, nk_filter_default);
-      if (nk_button_text(ctx, "...", 3, NK_BUTTON_DEFAULT))
+      nk_edit_string(ctx, NK_EDIT_SIMPLE, core_basename, &len_core, 64, nk_filter_default);
+      if (nk_button_text(ctx, "...", 3))
       {
-         out = &core;
+         out = core;
          strlcpy(picker_title, "Select core", sizeof(picker_title));
          strlcpy(picker_filter, ".dll", sizeof(picker_filter));
-         picker_startup_dir = settings->directory.libretro;
+         picker_startup_dir = settings->paths.directory_libretro;
          nk->window[NK_WND_FILE_PICKER].open = true;
       }
       nk_layout_row_dynamic(ctx, 30, 1);
       nk_label(ctx,"Content:", NK_TEXT_LEFT);
       nk_layout_row(ctx, NK_DYNAMIC, 30, 3, ratio);
       nk_edit_string(ctx, NK_EDIT_SIMPLE, content, &len_content, 64, nk_filter_default);
-      if (nk_button_text(ctx, "...", 3, NK_BUTTON_DEFAULT))
+      if (nk_button_text(ctx, "...", 3))
       {
-         out = &content;
+         out = content;
          strlcpy(picker_title, "Select content", sizeof(picker_title));
          strlcpy(picker_filter, ".zip", sizeof(picker_filter));
-         picker_startup_dir = settings->directory.menu_content;
+         picker_startup_dir = settings->paths.directory_menu_content;
          nk->window[NK_WND_FILE_PICKER].open = true;
       }
    }

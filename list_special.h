@@ -1,6 +1,7 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
+ *  Copyright (C) 2016-2017 - Brad Parker
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -31,7 +32,8 @@ enum dir_list_type
    DIR_LIST_COLLECTIONS,
    DIR_LIST_PLAIN,
    DIR_LIST_SHADERS,
-   DIR_LIST_AUTOCONFIG
+   DIR_LIST_AUTOCONFIG,
+   DIR_LIST_RECURSIVE
 };
 
 enum string_list_type
@@ -39,6 +41,7 @@ enum string_list_type
    STRING_LIST_NONE = 0,
    STRING_LIST_MENU_DRIVERS,
    STRING_LIST_CAMERA_DRIVERS,
+   STRING_LIST_WIFI_DRIVERS,
    STRING_LIST_LOCATION_DRIVERS,
    STRING_LIST_AUDIO_DRIVERS,
    STRING_LIST_AUDIO_RESAMPLER_DRIVERS,

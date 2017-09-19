@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -22,6 +22,8 @@
 #include <boolean.h>
 #include <retro_common_api.h>
 
+#include "video_driver.h"
+
 RETRO_BEGIN_DECLS
 
 enum font_driver_render_api
@@ -30,7 +32,12 @@ enum font_driver_render_api
    FONT_DRIVER_RENDER_OPENGL_API,
    FONT_DRIVER_RENDER_DIRECT3D_API,
    FONT_DRIVER_RENDER_VITA2D,
-   FONT_DRIVER_RENDER_VULKAN_API
+   FONT_DRIVER_RENDER_CTR,
+   FONT_DRIVER_RENDER_WIIU,
+   FONT_DRIVER_RENDER_VULKAN_API,
+   FONT_DRIVER_RENDER_CACA,
+   FONT_DRIVER_RENDER_GDI,
+   FONT_DRIVER_RENDER_VGA
 };
 
 enum text_alignment
@@ -72,6 +79,7 @@ struct font_atlas
    uint8_t *buffer; /* Alpha channel. */
    unsigned width;
    unsigned height;
+   bool dirty;
 };
 
 struct font_params
@@ -94,15 +102,18 @@ struct font_params
 
 typedef struct font_renderer
 {
-   void *(*init)(void *data, const char *font_path, float font_size);
-   void (*free)(void *data);
-   void (*render_msg)(void *data, const char *msg,
+   void *(*init)(void *data, const char *font_path,
+         float font_size, bool is_threaded);
+   void (*free)(void *data, bool is_threaded);
+   void (*render_msg)(
+         video_frame_info_t *video_info,
+         void *data, const char *msg,
          const void *params);
    const char *ident;
 
    const struct font_glyph *(*get_glyph)(void *data, uint32_t code);
    void (*bind_block)(void *data, void *block);
-   void (*flush)(void *data);
+   void (*flush)(unsigned width, unsigned height, void *data);
    
    int (*get_message_width)(void *data, const char *msg, unsigned msg_len_full, float scale);
 } font_renderer_t;
@@ -111,7 +122,7 @@ typedef struct font_renderer_driver
 {
    void *(*init)(const char *font_path, float font_size);
 
-   const struct font_atlas *(*get_atlas)(void *data);
+   struct font_atlas *(*get_atlas)(void *data);
 
    /* Returns NULL if no glyph for this code is found. */
    const struct font_glyph *(*get_glyph)(void *data, uint32_t code);
@@ -125,25 +136,42 @@ typedef struct font_renderer_driver
    int (*get_line_height)(void* data);
 } font_renderer_driver_t;
 
+typedef struct
+{
+   const font_renderer_t *renderer;
+   void *renderer_data;
+   float size;
+} font_data_t;
+
 /* font_path can be NULL for default font. */
 int font_renderer_create_default(const void **driver,
       void **handle, const char *font_path, unsigned font_size);
       
-bool font_driver_has_render_msg(void);
-
-void font_driver_render_msg(void *data, const char *msg, const struct font_params *params);
+void font_driver_render_msg(video_frame_info_t *video_info,
+      void *font_data, const char *msg, const void *params);
 
 void font_driver_bind_block(void *font_data, void *block);
 
-int font_driver_get_message_width(void *data, const char *msg, unsigned len, float scale);
+int font_driver_get_message_width(void *font_data, const char *msg, unsigned len, float scale);
 
-void font_driver_flush(void *data);
+void font_driver_flush(unsigned width, unsigned height, void *font_data);
 
-void font_driver_free(void *data);
+void font_driver_free(void *font_data);
 
-bool font_driver_init_first(const void **font_driver, void **font_handle,
-      void *data, const char *font_path, float font_size,
-      bool threading_hint, enum font_driver_render_api api);
+font_data_t *font_driver_init_first(
+      void *video_data,
+      const char *font_path,
+      float font_size,
+      bool threading_hint,
+      bool is_threaded,
+      enum font_driver_render_api api);
+
+void font_driver_init_osd(
+      void *video_data,
+      bool threading_hint,
+      bool is_threaded,
+      enum font_driver_render_api api);
+void font_driver_free_osd(void);
 
 extern font_renderer_t gl_raster_font;
 extern font_renderer_t libdbg_font;
@@ -151,9 +179,15 @@ extern font_renderer_t d3d_xbox360_font;
 extern font_renderer_t d3d_xdk1_font;
 extern font_renderer_t d3d_win32_font;
 extern font_renderer_t vita2d_vita_font;
+extern font_renderer_t ctr_font;
+extern font_renderer_t wiiu_font;
 extern font_renderer_t vulkan_raster_font;
+extern font_renderer_t caca_font;
+extern font_renderer_t gdi_font;
+extern font_renderer_t vga_font;
 
 extern font_renderer_driver_t stb_font_renderer;
+extern font_renderer_driver_t stb_unicode_font_renderer;
 extern font_renderer_driver_t freetype_font_renderer;
 extern font_renderer_driver_t coretext_font_renderer;
 extern font_renderer_driver_t bitmap_font_renderer;

@@ -1,5 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
+ *  Copyright (C) 2011 2017 - Daniel De Matteis
  *  Copyright (C) 2014 2015 - Jean-Andre Santoni
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
@@ -16,9 +17,9 @@
 
 #include <signal.h>
 
-#include "../../driver.h"
-#include "../../general.h"
-#include "../../runloop.h"
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
 
 #ifdef HAVE_EGL
 #include "../common/egl_common.h"
@@ -28,11 +29,15 @@
 #include "../common/gl_common.h"
 #endif
 
+#include "../../frontend/frontend_driver.h"
+
 typedef struct
 {
 #ifdef HAVE_EGL
    egl_ctx_data_t egl;
 #endif
+
+   EGLNativeWindowType native_window;
    bool resize;
    unsigned width, height;
 } vivante_ctx_data_t;
@@ -41,15 +46,19 @@ static void gfx_ctx_vivante_destroy(void *data)
 {
    vivante_ctx_data_t *viv = (vivante_ctx_data_t*)data;
 
+   if (viv)
+   {
 #ifdef HAVE_EGL
-   egl_destroy(&viv->egl);
+      egl_destroy(&viv->egl);
 #endif
 
-   viv->resize       = false;
-   free(viv);
+      viv->resize       = false;
+      free(viv);
+   }
+
 }
 
-static void *gfx_ctx_vivante_init(void *video_driver)
+static void *gfx_ctx_vivante_init(video_frame_info_t *video_info, void *video_driver)
 {
 #ifdef HAVE_EGL
    EGLint n;
@@ -73,12 +82,15 @@ static void *gfx_ctx_vivante_init(void *video_driver)
    if (!viv)
        return NULL;
 
-   (void)video_driver;
+#ifdef HAVE_EGL
+   frontend_driver_install_signal_handler();
+#endif
+
+   /* Disable cursor blinking so it's not visible in RetroArch. */
+   system("setterm -cursor off");
 
 #ifdef HAVE_EGL
-   egl_install_sighandlers();
-
-   if (!egl_init_context(&viv->egl, EGL_DEFAULT_DISPLAY, &major, &minor,
+   if (!egl_init_context(&viv->egl, EGL_NONE, EGL_DEFAULT_DISPLAY, &major, &minor,
             &n, attribs))
    {
       egl_report_error();
@@ -105,7 +117,8 @@ static void gfx_ctx_vivante_get_video_size(void *data,
 }
 
 static void gfx_ctx_vivante_check_window(void *data, bool *quit,
-      bool *resize, unsigned *width, unsigned *height, unsigned frame_count)
+      bool *resize, unsigned *width, unsigned *height,
+      bool is_shutdown)
 {
    unsigned new_width, new_height;
    vivante_ctx_data_t *viv = (vivante_ctx_data_t*)data;
@@ -121,38 +134,15 @@ static void gfx_ctx_vivante_check_window(void *data, bool *quit,
       *resize = true;
    }
 
-   *quit = g_egl_quit;
-}
-
-static bool gfx_ctx_vivante_set_resize(void *data,
-      unsigned width, unsigned height)
-{
-   (void)data;
-   (void)width;
-   (void)height;
-   return false;
-}
-
-static void gfx_ctx_vivante_update_window_title(void *data)
-{
-   char buf[128]        = {0};
-   char buf_fps[128]    = {0};
-   settings_t *settings = config_get_ptr();
-
-   (void)data;
-
-   video_monitor_get_fps(buf, sizeof(buf),
-         buf_fps, sizeof(buf_fps));
-   if (settings->fps_show)
-      runloop_msg_queue_push(buf_fps, 1, 1, false);
+   *quit = (bool)frontend_driver_get_signal_handler_state();
 }
 
 static bool gfx_ctx_vivante_set_video_mode(void *data,
+      video_frame_info_t *video_info,
       unsigned width, unsigned height,
       bool fullscreen)
 {
 #ifdef HAVE_EGL
-   EGLNativeWindowType window;
    static const EGLint attribs[] = {
       EGL_CONTEXT_CLIENT_VERSION, 2, /* Use version 2, even for GLES3. */
       EGL_NONE
@@ -177,10 +167,10 @@ static bool gfx_ctx_vivante_set_video_mode(void *data,
    }
 #endif
 
-   window     = fbCreateWindow(fbGetDisplayByIndex(0), 0, 0, 0, 0);
+   viv->native_window = fbCreateWindow(fbGetDisplayByIndex(0), 0, 0, 0, 0);
 
 #ifdef HAVE_EGL
-   if (!egl_create_surface(&viv->egl, window))
+   if (!egl_create_surface(&viv->egl, viv->native_window))
       goto error;
 #endif
 
@@ -193,10 +183,10 @@ error:
 }
 
 static void gfx_ctx_vivante_input_driver(void *data,
+      const char *name,
       const input_driver_t **input, void **input_data)
 {
-   (void)data;
-   *input = NULL;
+   *input      = NULL;
    *input_data = NULL;
 }
 
@@ -220,17 +210,21 @@ static bool gfx_ctx_vivante_suppress_screensaver(void *data, bool enable)
    return false;
 }
 
-static bool gfx_ctx_vivante_has_windowed(void *data)
-{
-   (void)data;
-   return false;
-}
-
 static void gfx_ctx_vivante_set_swap_interval(void *data, unsigned swap_interval)
 {
    vivante_ctx_data_t *viv = (vivante_ctx_data_t*)data;
+
 #ifdef HAVE_EGL
    egl_set_swap_interval(&viv->egl, swap_interval);
+#endif
+}
+
+static void gfx_ctx_vivante_swap_buffers(void *data, void *data2)
+{
+   vivante_ctx_data_t *viv = (vivante_ctx_data_t*)data;
+
+#ifdef HAVE_EGL
+   egl_swap_buffers(&viv->egl);
 #endif
 }
 
@@ -249,15 +243,6 @@ static void gfx_ctx_vivante_bind_hw_render(void *data, bool enable)
 
 #ifdef HAVE_EGL
    egl_bind_hw_render(&viv->egl, enable);
-#endif
-}
-
-static void gfx_ctx_vivante_swap_buffers(void *data)
-{
-   vivante_ctx_data_t *viv = (vivante_ctx_data_t*)data;
-
-#ifdef HAVE_EGL
-   egl_swap_buffers(&viv->egl);
 #endif
 }
 
@@ -285,12 +270,12 @@ const gfx_ctx_driver_t gfx_ctx_vivante_fbdev = {
    NULL, /* get_video_output_next */
    NULL, /* get_metrics */
    NULL,
-   gfx_ctx_vivante_update_window_title,
+   NULL, /* update_title */
    gfx_ctx_vivante_check_window,
-   gfx_ctx_vivante_set_resize,
+   NULL, /* set_resize */
    gfx_ctx_vivante_has_focus,
    gfx_ctx_vivante_suppress_screensaver,
-   gfx_ctx_vivante_has_windowed,
+   NULL, /* has_windowed */
    gfx_ctx_vivante_swap_buffers,
    gfx_ctx_vivante_input_driver,
    gfx_ctx_vivante_get_proc_address,
@@ -300,5 +285,7 @@ const gfx_ctx_driver_t gfx_ctx_vivante_fbdev = {
    "vivante-fbdev",
    gfx_ctx_vivante_get_flags,
    gfx_ctx_vivante_set_flags,
-   gfx_ctx_vivante_bind_hw_render
+   gfx_ctx_vivante_bind_hw_render,
+   NULL,
+   NULL
 };

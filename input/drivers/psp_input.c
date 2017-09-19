@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -17,6 +17,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
+
 #if defined(SN_TARGET_PSP2)
 #include <sceerror.h>
 #include <kernel.h>
@@ -29,17 +33,15 @@
 
 #include <boolean.h>
 #include <libretro.h>
+#include <retro_miscellaneous.h>
 
-#include "../../defines/psp_defines.h"
-
-#include "../../driver.h"
-#include "../../general.h"
-#include "../input_config.h"
 #ifdef HAVE_KERNEL_PRX
 #include "../../bootstrap/psp1/kernel_functions.h"
 #endif
 
-#define MAX_PADS 1
+#include "../../defines/psp_defines.h"
+
+#include "../input_driver.h"
 
 typedef struct psp_input
 {
@@ -53,25 +55,31 @@ static void psp_input_poll(void *data)
 {
    psp_input_t *psp = (psp_input_t*)data;
 
-   if (psp->joypad)
+   if (psp && psp->joypad)
       psp->joypad->poll();
 }
 
-static int16_t psp_input_state(void *data, const struct retro_keybind **binds,
+static int16_t psp_input_state(void *data,
+      rarch_joypad_info_t joypad_info,
+      const struct retro_keybind **binds,
       unsigned port, unsigned device,
       unsigned idx, unsigned id)
 {
-   psp_input_t *psp = (psp_input_t*)data;
+   psp_input_t *psp           = (psp_input_t*)data;
 
+#if !defined(SN_TARGET_PSP2) && !defined(VITA)
    if (port > 0)
       return 0;
+#endif
 
    switch (device)
    {
       case RETRO_DEVICE_JOYPAD:
-         return input_joypad_pressed(psp->joypad, port, binds[port], id);
+         return input_joypad_pressed(psp->joypad, joypad_info, port, binds[port], id);
       case RETRO_DEVICE_ANALOG:
-         return input_joypad_analog(psp->joypad, port, idx, id, binds[port]);
+         if (binds[port])
+            return input_joypad_analog(psp->joypad, joypad_info, port, idx, id, binds[port]);
+         break;
    }
 
    return 0;
@@ -87,28 +95,15 @@ static void psp_input_free_input(void *data)
    free(data);
 }
 
-static void* psp_input_initialize(void)
+static void* psp_input_initialize(const char *joypad_driver)
 {
-   settings_t *settings = config_get_ptr();
    psp_input_t *psp = (psp_input_t*)calloc(1, sizeof(*psp));
    if (!psp)
       return NULL;
 
-   psp->joypad = input_joypad_init_driver(
-         settings->input.joypad_driver, psp);
+   psp->joypad = input_joypad_init_driver(joypad_driver, psp);
 
    return psp;
-}
-
-static bool psp_input_key_pressed(void *data, int key)
-{
-   settings_t *settings = config_get_ptr();
-   psp_input_t *psp     = (psp_input_t*)data;
-
-   if (input_joypad_pressed(psp->joypad, 0, settings->input.binds[0], key))
-      return true;
-
-   return false;
 }
 
 static bool psp_input_meta_key_pressed(void *data, int key)
@@ -140,11 +135,11 @@ static void psp_input_grab_mouse(void *data, bool state)
 static bool psp_input_set_rumble(void *data, unsigned port,
       enum retro_rumble_effect effect, uint16_t strength)
 {
-   (void)data;
-   (void)port;
-   (void)effect;
-   (void)strength;
+   psp_input_t *psp = (psp_input_t*)data;
 
+   if (psp && psp->joypad)
+      return input_joypad_set_rumble(psp->joypad,
+         port, effect, strength);
    return false;
 }
 
@@ -168,7 +163,6 @@ input_driver_t input_psp = {
    psp_input_initialize,
    psp_input_poll,
    psp_input_state,
-   psp_input_key_pressed,
    psp_input_meta_key_pressed,
    psp_input_free_input,
    NULL,

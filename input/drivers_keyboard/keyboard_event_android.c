@@ -1,5 +1,5 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -12,6 +12,8 @@
  *  You should have received a copy of the GNU General Public License along with RetroArch.
  *  If not, see <http://www.gnu.org/licenses/>.
  */
+
+#include <retro_miscellaneous.h>
 
 #include "keyboard_event_android.h"
 
@@ -29,8 +31,8 @@ bool android_keyboard_port_input_pressed(const struct retro_keybind *binds, unsi
    if (id < RARCH_BIND_LIST_END)
    {
       const struct retro_keybind *bind = &binds[id];
-      unsigned bit = input_keymaps_translate_rk_to_keysym(binds[id].key);
-      return bind->valid && BIT_GET(android_key_state[ANDROID_KEYBOARD_PORT], bit);
+      unsigned bit                     = rarch_keysym_lut[bind->key];
+      return BIT_GET(android_key_state[ANDROID_KEYBOARD_PORT], bit);
    }
    return false;
 }

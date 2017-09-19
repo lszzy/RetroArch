@@ -1,4 +1,4 @@
-/* Copyright  (C) 2010-2015 The RetroArch team
+/* Copyright  (C) 2010-2017 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this file (compat_fnmatch.c).
@@ -23,6 +23,7 @@
 #if __TEST_FNMATCH__
 #include <assert.h>
 #endif
+#include <stddef.h>
 
 #include <compat/fnmatch.h>
 
@@ -34,9 +35,10 @@
 
 int rl_fnmatch(const char *pattern, const char *string, int flags)
 {
-   const char *c;
-   int charmatch = 0;
    int rv;
+   const char *c = NULL;
+   int charmatch = 0;
+
    for (c = pattern; *c != '\0'; c++)
    {
       /* String ended before pattern */

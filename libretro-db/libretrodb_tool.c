@@ -1,4 +1,4 @@
-/* Copyright  (C) 2010-2016 The RetroArch team
+/* Copyright  (C) 2010-2017 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this file (libretrodb_tool.c).
@@ -22,6 +22,8 @@
 
 #include <stdio.h>
 #include <string.h>
+
+#include <string/stdstring.h>
 
 #include "libretrodb.h"
 #include "rmsgpack_dom.h"
@@ -59,7 +61,7 @@ int main(int argc, char ** argv)
       printf("Could not open db file '%s': %s\n", path, strerror(-rv));
       goto error;
    }
-   else if (!strcmp(command, "list"))
+   else if (memcmp(command, "list", 4) == 0)
    {
       if ((rv = libretrodb_cursor_open(db, cur, NULL)) != 0)
       {
@@ -80,7 +82,7 @@ int main(int argc, char ** argv)
          rmsgpack_dom_value_free(&item);
       }
    }
-   else if (!strcmp(command, "find"))
+   else if (memcmp(command, "find", 4) == 0)
    {
       if (argc != 4)
       {
@@ -111,7 +113,7 @@ int main(int argc, char ** argv)
          rmsgpack_dom_value_free(&item);
       }
    }
-   else if (!strcmp(command, "create-index"))
+   else if (memcmp(command, "create-index", 12) == 0)
    {
       const char * index_name, * field_name;
 

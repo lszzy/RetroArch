@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -17,6 +17,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
+
 #ifdef _XBOX
 #include <xtl.h>
 #endif
@@ -24,8 +28,7 @@
 #include <boolean.h>
 #include <libretro.h>
 
-#include "../../driver.h"
-#include "../../general.h"
+#include "../input_driver.h"
 
 #define MAX_PADS 4
 
@@ -43,11 +46,13 @@ static void xdk_input_poll(void *data)
       xdk->joypad->poll();
 }
 
-static int16_t xdk_input_state(void *data, const struct retro_keybind **binds,
+static int16_t xdk_input_state(void *data,
+      rarch_joypad_info_t joypad_info,
+      const struct retro_keybind **binds,
       unsigned port, unsigned device,
       unsigned index, unsigned id)
 {
-   xdk_input_t *xdk = (xdk_input_t*)data;
+   xdk_input_t *xdk           = (xdk_input_t*)data;
 
    if (port >= MAX_PADS)
       return 0;
@@ -55,9 +60,11 @@ static int16_t xdk_input_state(void *data, const struct retro_keybind **binds,
    switch (device)
    {
       case RETRO_DEVICE_JOYPAD:
-         return input_joypad_pressed(xdk->joypad, port, binds[port], id);
+         return input_joypad_pressed(xdk->joypad, joypad_info, port, binds[port], id);
       case RETRO_DEVICE_ANALOG:
-         return input_joypad_analog(xdk->joypad, port, index, id, binds[port]);
+         if (binds[port])
+            return input_joypad_analog(xdk->joypad, joypad_info, port, index, id, binds[port]);
+         break;
    }
 
    return 0;
@@ -76,27 +83,15 @@ static void xdk_input_free_input(void *data)
    free(xdk);
 }
 
-static void *xdk_input_init(void)
+static void *xdk_input_init(const char *joypad_driver)
 {
-   settings_t *settings = config_get_ptr();
    xdk_input_t *xdk     = (xdk_input_t*)calloc(1, sizeof(*xdk));
    if (!xdk)
       return NULL;
 
-   xdk->joypad = input_joypad_init_driver(settings->input.joypad_driver, xdk);
+   xdk->joypad = input_joypad_init_driver(joypad_driver, xdk);
 
    return xdk;
-}
-
-static bool xdk_input_key_pressed(void *data, int key)
-{
-   xdk_input_t *xdk     = (xdk_input_t*)data;
-   settings_t *settings = config_get_ptr();
-
-   if (input_joypad_pressed(xdk->joypad, 0, settings->input.binds[0], key))
-      return true;
-
-   return false;
 }
 
 static bool xdk_input_meta_key_pressed(void *data, int key)
@@ -180,7 +175,6 @@ input_driver_t input_xinput = {
    xdk_input_init,
    xdk_input_poll,
    xdk_input_state,
-   xdk_input_key_pressed,
    xdk_input_meta_key_pressed,
    xdk_input_free_input,
    NULL,

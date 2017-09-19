@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2014 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -14,7 +14,7 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
-// Compile: gcc -o supereagle.so -shared supereagle.c -std=c99 -O3 -Wall -pedantic -fPIC
+/* Compile: gcc -o supereagle.so -shared supereagle.c -std=c99 -O3 -Wall -pedantic -fPIC */
 
 #include "softfilter.h"
 #include <stdlib.h>
@@ -272,7 +272,10 @@ static void supereagle_work_cb_rgb565(void *data, void *thread_data)
    unsigned height = thr->height;
 
    supereagle_generic_rgb565(width, height,
-         thr->first, thr->last, input, thr->in_pitch / SOFTFILTER_BPP_RGB565, output, thr->out_pitch / SOFTFILTER_BPP_RGB565);
+         thr->first, thr->last, input,
+            (unsigned)(thr->in_pitch / SOFTFILTER_BPP_RGB565),
+            output,
+            (unsigned)(thr->out_pitch / SOFTFILTER_BPP_RGB565));
 }
 
 static void supereagle_work_cb_xrgb8888(void *data, void *thread_data)
@@ -284,7 +287,10 @@ static void supereagle_work_cb_xrgb8888(void *data, void *thread_data)
    unsigned height = thr->height;
 
    supereagle_generic_xrgb8888(width, height,
-         thr->first, thr->last, input, thr->in_pitch / SOFTFILTER_BPP_XRGB8888, output, thr->out_pitch / SOFTFILTER_BPP_XRGB8888);
+         thr->first, thr->last, input,
+        (unsigned)(thr->in_pitch / SOFTFILTER_BPP_XRGB8888),
+        output,
+        (unsigned)(thr->out_pitch / SOFTFILTER_BPP_XRGB8888));
 }
 
 static void supereagle_generic_packets(void *data,
@@ -308,7 +314,7 @@ static void supereagle_generic_packets(void *data,
       thr->width = width;
       thr->height = y_end - y_start;
 
-      // Workers need to know if they can access pixels outside their given buffer.
+      /* Workers need to know if they can access pixels outside their given buffer. */
       thr->first = y_start;
       thr->last = y_end == height;
 

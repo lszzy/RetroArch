@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2013-2014 - Jason Fetters
- *  Copyright (C) 2011-2015 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -20,6 +20,9 @@
 #ifdef HAVE_COCOA
 #include "../ui_cocoa.h"
 #endif
+
+#include <retro_assert.h>
+
 #include "../../../verbosity.h"
 
 /* Define compatibility symbols and categories. */
@@ -54,6 +57,16 @@ void cocoagl_gfx_ctx_update(void);
 void *glkitview_init(void);
 
 @implementation CocoaView
+
+#if defined(HAVE_COCOA)
+#include "../../../input/drivers/cocoa_input.h"
+
+- (void)scrollWheel:(NSEvent *)theEvent {
+    cocoa_input_data_t *apple = (cocoa_input_data_t*)input_driver_get_data();
+    (void)apple;
+}
+#endif
+
 + (CocoaView*)get
 {
    if (!g_instance)
@@ -343,7 +356,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
     /* Creata a video device and input from that Device.  Add the input to the capture session. */
     videoDevice = (AVCaptureDevice*)[AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
     if (videoDevice == nil)
-        assert(0);
+        retro_assert(0);
     
     /* Add the device to the session. */
     input = (AVCaptureDeviceInput*)[AVCaptureDeviceInput deviceInputWithDevice:videoDevice error:&error];
@@ -351,7 +364,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
     if (error)
     {
         RARCH_ERR("video device input %s\n", error.localizedDescription.UTF8String);
-        assert(0);
+        retro_assert(0);
     }
     
     [_session addInput:input];

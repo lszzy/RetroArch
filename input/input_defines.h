@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -22,6 +22,73 @@
 #include <retro_common_api.h>
 
 RETRO_BEGIN_DECLS
+
+#define MAX_USERS                      16
+
+#define RARCH_FIRST_CUSTOM_BIND        16
+#define RARCH_FIRST_META_KEY           RARCH_CUSTOM_BIND_LIST_END
+
+/* RetroArch specific bind IDs. */
+enum
+{
+   /* Custom binds that extend the scope of RETRO_DEVICE_JOYPAD for
+    * RetroArch specifically.
+    * Analogs (RETRO_DEVICE_ANALOG) */
+   RARCH_ANALOG_LEFT_X_PLUS = RARCH_FIRST_CUSTOM_BIND,
+   RARCH_ANALOG_LEFT_X_MINUS,
+   RARCH_ANALOG_LEFT_Y_PLUS,
+   RARCH_ANALOG_LEFT_Y_MINUS,
+   RARCH_ANALOG_RIGHT_X_PLUS,
+   RARCH_ANALOG_RIGHT_X_MINUS,
+   RARCH_ANALOG_RIGHT_Y_PLUS,
+   RARCH_ANALOG_RIGHT_Y_MINUS,
+
+   /* Turbo */
+   RARCH_TURBO_ENABLE,
+
+   RARCH_CUSTOM_BIND_LIST_END,
+
+   /* Command binds. Not related to game input,
+    * only usable for port 0. */
+   RARCH_FAST_FORWARD_KEY = RARCH_FIRST_META_KEY,
+   RARCH_FAST_FORWARD_HOLD_KEY,
+   RARCH_LOAD_STATE_KEY,
+   RARCH_SAVE_STATE_KEY,
+   RARCH_FULLSCREEN_TOGGLE_KEY,
+   RARCH_QUIT_KEY,
+   RARCH_STATE_SLOT_PLUS,
+   RARCH_STATE_SLOT_MINUS,
+   RARCH_REWIND,
+   RARCH_MOVIE_RECORD_TOGGLE,
+   RARCH_PAUSE_TOGGLE,
+   RARCH_FRAMEADVANCE,
+   RARCH_RESET,
+   RARCH_SHADER_NEXT,
+   RARCH_SHADER_PREV,
+   RARCH_CHEAT_INDEX_PLUS,
+   RARCH_CHEAT_INDEX_MINUS,
+   RARCH_CHEAT_TOGGLE,
+   RARCH_SCREENSHOT,
+   RARCH_MUTE,
+   RARCH_OSK,
+   RARCH_NETPLAY_FLIP,
+   RARCH_NETPLAY_GAME_WATCH,
+   RARCH_SLOWMOTION,
+   RARCH_ENABLE_HOTKEY,
+   RARCH_VOLUME_UP,
+   RARCH_VOLUME_DOWN,
+   RARCH_OVERLAY_NEXT,
+   RARCH_DISK_EJECT_TOGGLE,
+   RARCH_DISK_NEXT,
+   RARCH_DISK_PREV,
+   RARCH_GRAB_MOUSE_TOGGLE,
+   RARCH_GAME_FOCUS_TOGGLE,
+
+   RARCH_MENU_TOGGLE,
+
+   RARCH_BIND_LIST_END,
+   RARCH_BIND_LIST_END_NULL
+};
 
 enum analog_dpad_mode
 {
@@ -48,18 +115,16 @@ enum analog_dpad_mode
  * Analog binds use RETRO_DEVICE_ANALOG, but we follow the same scheme
  * internally in RetroArch for simplicity, so they are mapped into [16, 23].
  */
-#define RARCH_FIRST_CUSTOM_BIND        16
-#define RARCH_FIRST_META_KEY           RARCH_CUSTOM_BIND_LIST_END
 
-#define AXIS_NEG(x)        (((uint32_t)(x) << 16) | UINT16_C(0xFFFF))
-#define AXIS_POS(x)        ((uint32_t)(x) | UINT32_C(0xFFFF0000))
-#define AXIS_NONE          UINT32_C(0xFFFFFFFF)
-#define AXIS_DIR_NONE      UINT16_C(0xFFFF)
+#define AXIS_NEG(x)        (((uint32_t)(x) << 16) | 0xFFFFU)
+#define AXIS_POS(x)        ((uint32_t)(x) | 0xFFFF0000UL)
+#define AXIS_NONE          0xFFFFFFFFUL
+#define AXIS_DIR_NONE      0xFFFFU
 
-#define AXIS_NEG_GET(x)    (((uint32_t)(x) >> 16) & UINT16_C(0xFFFF))
-#define AXIS_POS_GET(x)    ((uint32_t)(x) & UINT16_C(0xFFFF))
+#define AXIS_NEG_GET(x)    (((uint32_t)(x) >> 16) & 0xFFFFU)
+#define AXIS_POS_GET(x)    ((uint32_t)(x) & 0xFFFFU)
 
-#define NO_BTN             UINT16_C(0xFFFF)
+#define NO_BTN             0xFFFFU
 
 #define HAT_UP_SHIFT       15
 #define HAT_DOWN_SHIFT     14

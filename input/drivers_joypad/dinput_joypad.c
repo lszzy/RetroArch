@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -22,13 +22,18 @@
 #include <dinput.h>
 
 #include <boolean.h>
+#include <compat/strl.h>
+#include <string/stdstring.h>
 
-#include "../../general.h"
-#include "../../verbosity.h"
-#include "../input_autodetect.h"
-#include "../input_config.h"
-#include "../input_joypad_driver.h"
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
+
+#include "../../tasks/tasks_internal.h"
+#include "../gfx/video_driver.h"
+#include "../input_driver.h"
 #include "../input_keymaps.h"
+#include "../../verbosity.h"
 
 struct dinput_joypad
 {
@@ -61,7 +66,6 @@ extern LPDIRECTINPUT8 g_dinput_ctx;
 static void dinput_joypad_destroy(void)
 {
    unsigned i;
-   settings_t *settings = config_get_ptr();
 
    for (i = 0; i < MAX_USERS; i++)
    {
@@ -75,7 +79,8 @@ static void dinput_joypad_destroy(void)
       g_pads[i].joy_name = NULL;
       free(g_pads[i].joy_friendly_name);
       g_pads[i].joy_friendly_name = NULL;
-      *settings->input.device_names[i] = '\0';
+
+      input_config_clear_device_name(i);
    }
 
    g_joypad_cnt = 0;
@@ -102,7 +107,7 @@ static BOOL CALLBACK enum_axes_cb(const DIDEVICEOBJECTINSTANCE *inst, void *p)
    return DIENUM_CONTINUE;
 }
 
-
+#ifdef HAVE_XINPUT
 /* Based on SDL2's implementation. */
 static bool guid_is_xinput_device(const GUID* product_guid)
 {
@@ -118,7 +123,7 @@ static bool guid_is_xinput_device(const GUID* product_guid)
 
    for (i = 0; i < ARRAY_SIZE(common_xinput_guids); ++i)
    {
-      if (memcmp(product_guid, &common_xinput_guids[i], sizeof(GUID)) == 0)
+      if (string_is_equal_fast(product_guid, &common_xinput_guids[i], sizeof(GUID)))
          return true;
    }
 
@@ -168,6 +173,7 @@ static bool guid_is_xinput_device(const GUID* product_guid)
    raw_devs = NULL;
    return false;
 }
+#endif
 
 static const char *dinput_joypad_name(unsigned pad)
 {
@@ -201,7 +207,6 @@ static BOOL CALLBACK enum_joypad_cb(const DIDEVICEINSTANCE *inst, void *p)
    bool is_xinput_pad;
 #endif
    LPDIRECTINPUTDEVICE8 *pad = NULL;
-   settings_t *settings = config_get_ptr();
 
    (void)p;
 
@@ -219,8 +224,8 @@ static BOOL CALLBACK enum_joypad_cb(const DIDEVICEINSTANCE *inst, void *p)
 #endif
    return DIENUM_CONTINUE;
 
-   g_pads[g_joypad_cnt].joy_name = strdup(inst->tszProductName);
-   g_pads[g_joypad_cnt].joy_friendly_name = strdup(inst->tszInstanceName);
+   g_pads[g_joypad_cnt].joy_name          = strdup((const char*)inst->tszProductName);
+   g_pads[g_joypad_cnt].joy_friendly_name = strdup((const char*)inst->tszInstanceName);
 
    /* there may be more useful info in the GUID so leave this here for a while */
 #if 0
@@ -233,7 +238,7 @@ static BOOL CALLBACK enum_joypad_cb(const DIDEVICEINSTANCE *inst, void *p)
    g_pads[g_joypad_cnt].vid = inst->guidProduct.Data1 % 0x10000;
    g_pads[g_joypad_cnt].pid = inst->guidProduct.Data1 / 0x10000;
 
-   RARCH_LOG("Device #%u PID: {%04lX} VID:{%04lX}\n", g_joypad_cnt, g_pads[g_joypad_cnt].pid, g_pads[g_joypad_cnt].vid);
+   RARCH_LOG("[DINPUT]: Device #%u PID: {%04lX} VID:{%04lX}\n", g_joypad_cnt, g_pads[g_joypad_cnt].pid, g_pads[g_joypad_cnt].vid);
 
 #ifdef HAVE_XINPUT
    is_xinput_pad = g_xinput_block_pads
@@ -258,21 +263,14 @@ static BOOL CALLBACK enum_joypad_cb(const DIDEVICEINSTANCE *inst, void *p)
    if (!is_xinput_pad)
 #endif
    {
-      autoconfig_params_t params = {{0}};
-
-      strlcpy(settings->input.device_names[g_joypad_cnt],
-            dinput_joypad_name(g_joypad_cnt),
-            sizeof(settings->input.device_names[g_joypad_cnt]));
-
-      params.idx = g_joypad_cnt;
-      strlcpy(params.name, dinput_joypad_name(g_joypad_cnt), sizeof(params.name));
-      strlcpy(params.display_name, dinput_joypad_friendly_name(g_joypad_cnt), sizeof(params.driver));
-      strlcpy(params.driver, dinput_joypad.ident, sizeof(params.driver));
-      params.vid = dinput_joypad_vid(g_joypad_cnt);
-      params.pid = dinput_joypad_pid(g_joypad_cnt);
-      input_config_autoconfigure_joypad(&params);
-      settings->input.pid[g_joypad_cnt] = params.pid;
-      settings->input.vid[g_joypad_cnt] = params.vid;
+      if (!input_autoconfigure_connect(
+               dinput_joypad_name(g_joypad_cnt),
+               dinput_joypad_friendly_name(g_joypad_cnt),
+               dinput_joypad.ident,
+               g_joypad_cnt,
+               dinput_joypad_vid(g_joypad_cnt),
+               dinput_joypad_pid(g_joypad_cnt)))
+         input_config_set_device_name(g_joypad_cnt, dinput_joypad_name(g_joypad_cnt));
    }
 
 #ifdef HAVE_XINPUT
@@ -295,31 +293,30 @@ static bool dinput_joypad_init(void *data)
 
    for (i = 0; i < MAX_USERS; ++i)
    {
-      g_xinput_pad_indexes[i] = -1;
-      g_pads[i].joy_name = NULL;
+      g_xinput_pad_indexes[i]     = -1;
+      g_pads[i].joy_name          = NULL;
       g_pads[i].joy_friendly_name = NULL;
    }
 
-   RARCH_LOG("Enumerating DInput joypads ...\n");
+   RARCH_LOG("[DINPUT]: Enumerating joypads ...\n");
    IDirectInput8_EnumDevices(g_dinput_ctx, DI8DEVCLASS_GAMECTRL,
          enum_joypad_cb, NULL, DIEDFL_ATTACHEDONLY);
-   RARCH_LOG("Done enumerating DInput joypads ...\n");
+   RARCH_LOG("[DINPUT]: Done enumerating joypads ...\n");
    return true;
 }
 
 static bool dinput_joypad_button(unsigned port_num, uint16_t joykey)
 {
-   const struct dinput_joypad *pad = NULL;
-
-   if (joykey == NO_BTN)
+   unsigned hat_dir                = 0;
+   const struct dinput_joypad *pad = &g_pads[port_num];
+   if (!pad || !pad->joypad)
       return false;
 
-   pad = &g_pads[port_num];
-   if (!pad->joypad)
-      return false;
+   hat_dir = GET_HAT_DIR(joykey);
 
    /* Check hat. */
-   if (GET_HAT_DIR(joykey))
+
+   if (hat_dir)
    {
       unsigned pov;
       unsigned hat   = GET_HAT(joykey);
@@ -334,7 +331,7 @@ static bool dinput_joypad_button(unsigned port_num, uint16_t joykey)
       /* Magic numbers I'm not sure where originate from. */
       if (pov < 36000)
       {
-         switch (GET_HAT_DIR(joykey))
+         switch (hat_dir)
          {
             case HAT_UP_MASK:
                return (pov >= 31500) || (pov <= 4500);

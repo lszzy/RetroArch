@@ -1,7 +1,7 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2011-2016 - Daniel De Matteis
- *  Copyright (C) 2014-2015 - Jean-André Santoni
- *  Copyright (C) 2016      - Andrés Suárez
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
+ *  Copyright (C) 2014-2017 - Jean-André Santoni
+ *  Copyright (C) 2016-2017 - Andrés Suárez
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -36,7 +36,7 @@ void nk_wnd_settings(nk_menu_handle_t *nk)
    struct nk_context *ctx = &nk->ctx;
    const int id           = NK_WND_SETTINGS;
 
-   if (nk_begin(ctx, &layout, "Settings", nk_rect(240, 10, 300, 400),
+   if (nk_begin(ctx, "Settings", nk_rect(240, 10, 300, 400),
          NK_WINDOW_CLOSABLE|NK_WINDOW_MINIMIZABLE|NK_WINDOW_MOVABLE|
          NK_WINDOW_SCALABLE|NK_WINDOW_BORDER))
    {

@@ -1,5 +1,5 @@
 /* RetroArch - A frontend for libretro.
- *  Copyright (C) 2011-2015 - Andres Suarez
+ *  Copyright (C) 2011-2017 - Andrés Suárez
  *
  * RetroArch is free software: you can redistribute it and/or modify it under the terms
  * of the GNU General Public License as published by the Free Software Found-
@@ -16,8 +16,6 @@
 #ifndef HAVE_MENU
 #define HAVE_MENU
 #endif
-
-#include <retro_common_api.h>
 
 #include "config.h"
 #include "configuration.h"

@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2013-2015 - pinumbernumber
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *  
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -26,16 +26,19 @@
 #include <stddef.h>
 #include <string.h>
 
-#include <retro_inline.h>
-#include <dynamic/dylib.h>
 #include <boolean.h>
+#include <retro_inline.h>
+#include <compat/strl.h>
+#include <dynamic/dylib.h>
 
-#include "../input_autodetect.h"
-#include "../input_config.h"
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
 
-#include "../../general.h"
+#include "../../tasks/tasks_internal.h"
+#include "../input_driver.h"
+
 #include "../../verbosity.h"
-
 
 /* Check if the definitions do not already exist.
  * Official and mingw xinput headers have different include guards.
@@ -135,7 +138,7 @@ static INLINE int pad_index_to_xuser_index(unsigned pad)
 /* Generic "XInput" instead of "Xbox 360", because there are
  * some other non-xbox third party PC controllers.
  */
-static const char* const XBOX_CONTROLLER_NAMES[4] = 
+static const char* const XBOX_CONTROLLER_NAMES[4] =
 {
    "XInput Controller (User 1)",
    "XInput Controller (User 2)",
@@ -143,22 +146,33 @@ static const char* const XBOX_CONTROLLER_NAMES[4] =
    "XInput Controller (User 4)"
 };
 
+static const char* const XBOX_ONE_CONTROLLER_NAMES[4] =
+{
+   "XBOX One Controller (User 1)",
+   "XBOX One Controller (User 2)",
+   "XBOX One Controller (User 3)",
+   "XBOX One Controller (User 4)"
+};
+
 const char *xinput_joypad_name(unsigned pad)
 {
    int xuser = pad_index_to_xuser_index(pad);
-
+   /* Use the real controller name for XBOX One controllers since
+      they are slightly different  */
    if (xuser < 0)
       return dinput_joypad.name(pad);
-   /* TODO: Different name if disconnected? */
+
+   if (strstr(dinput_joypad.name(pad), "Xbox One For Windows"))
+      return XBOX_ONE_CONTROLLER_NAMES[xuser];
+
    return XBOX_CONTROLLER_NAMES[xuser];
 }
 
 static bool xinput_joypad_init(void *data)
 {
-   unsigned i, autoconf_pad;
+   unsigned i, j;
    XINPUT_STATE dummy_state;
    const char *version = "1.4";
-   settings_t *settings = config_get_ptr();
 
    (void)data;
 
@@ -183,11 +197,11 @@ static bool xinput_joypad_init(void *data)
 
    if (!g_xinput_dll)
    {
-      RARCH_ERR("Failed to load XInput, ensure DirectX and controller drivers are up to date.\n");
+      RARCH_ERR("[XInput]: Failed to load XInput, ensure DirectX and controller drivers are up to date.\n");
       return false;
    }
 
-   RARCH_LOG("Found XInput v%s.\n", version);
+   RARCH_LOG("[XInput]: Found XInput v%s.\n", version);
 
    /* If we get here then an xinput DLL is correctly loaded.
     * First try to load ordinal 100 (XInputGetStateEx).
@@ -205,17 +219,17 @@ static bool xinput_joypad_init(void *data)
 
       if (!g_XInputGetStateEx)
       {
-         RARCH_ERR("Failed to init XInput: DLL is invalid or corrupt.\n");
+         RARCH_ERR("[XInput]: Failed to init: DLL is invalid or corrupt.\n");
          dylib_close(g_xinput_dll);
          return false; /* DLL was loaded but did not contain the correct function. */
       }
-      RARCH_WARN("XInput: No guide button support.\n");
+      RARCH_WARN("[XInput]: No guide button support.\n");
    }
 
    g_XInputSetState = (XInputSetState_t)dylib_proc(g_xinput_dll, "XInputSetState");
    if (!g_XInputSetState)
    {
-      RARCH_ERR("Failed to init XInput: DLL is invalid or corrupt.\n");
+      RARCH_ERR("[XInput]: Failed to init: DLL is invalid or corrupt.\n");
       dylib_close(g_xinput_dll);
       return false; /* DLL was loaded but did not contain the correct function. */
    }
@@ -229,7 +243,7 @@ static bool xinput_joypad_init(void *data)
    {
       g_xinput_states[i].connected = !(g_XInputGetStateEx(i, &dummy_state) == ERROR_DEVICE_NOT_CONNECTED);
       if (g_xinput_states[i].connected)
-         RARCH_LOG("Found XInput controller, user #%u\n", i);
+         RARCH_LOG("[XInput]: Found controller, user #%u\n", i);
    }
 
    if ((!g_xinput_states[0].connected) &&
@@ -237,7 +251,13 @@ static bool xinput_joypad_init(void *data)
          (!g_xinput_states[2].connected) &&
          (!g_xinput_states[3].connected))
       return false;
-
+#if (1)
+   else
+   {
+      RARCH_LOG("[XInput]: Pads connected: %d\n", g_xinput_states[0].connected + 
+      g_xinput_states[1].connected + g_xinput_states[2].connected + g_xinput_states[3].connected);
+   }
+#endif
    g_xinput_block_pads = true;
 
    /* We're going to have to be buddies with dinput if we want to be able
@@ -248,21 +268,19 @@ static bool xinput_joypad_init(void *data)
       return false;
    }
 
-   for (autoconf_pad = 0; autoconf_pad < MAX_USERS; autoconf_pad++)
+   for (j = 0; j < MAX_USERS; j++)
    {
-      if (pad_index_to_xuser_index(autoconf_pad) > -1)
+      RARCH_LOG("[XInput]: Attempting autoconf for, user #%u\n", j);
+      if (pad_index_to_xuser_index(j) > -1)
       {
-         autoconfig_params_t params = {{0}};
-
-         strlcpy(settings->input.device_names[autoconf_pad],
-               xinput_joypad_name(autoconf_pad),
-               sizeof(settings->input.device_names[autoconf_pad]));
-
-         /* TODO - implement VID/PID? */
-         params.idx = autoconf_pad;
-         strlcpy(params.name, xinput_joypad_name(autoconf_pad), sizeof(params.name));
-         strlcpy(params.driver, xinput_joypad.ident, sizeof(params.driver));
-         input_config_autoconfigure_joypad(&params);
+         if (!input_autoconfigure_connect(
+               xinput_joypad_name(j),
+               NULL,
+               xinput_joypad.ident,
+               j,
+               0,
+               0))
+            input_config_set_device_name(j, xinput_joypad_name(j));
       }
    }
 
@@ -314,14 +332,11 @@ static const uint16_t button_index_to_bitmap_code[] =  {
 
 static bool xinput_joypad_button(unsigned port_num, uint16_t joykey)
 {
-   uint16_t btn_word;
-   int xuser;
+   uint16_t btn_word    = 0;
    unsigned num_buttons = 0;
+   unsigned hat_dir     = 0;
+   int xuser            = pad_index_to_xuser_index(port_num);
 
-   if (joykey == NO_BTN)
-      return false;
-
-   xuser = pad_index_to_xuser_index(port_num);
    if (xuser == -1)
       return dinput_joypad.button(port_num, joykey);
 
@@ -329,10 +344,11 @@ static bool xinput_joypad_button(unsigned port_num, uint16_t joykey)
       return false;
 
    btn_word = g_xinput_states[xuser].xstate.Gamepad.wButtons;
+   hat_dir  = GET_HAT_DIR(joykey);
 
-   if (GET_HAT_DIR(joykey))
+   if (hat_dir)
    {
-      switch (GET_HAT_DIR(joykey))
+      switch (hat_dir)
       {
          case HAT_UP_MASK:
             return btn_word & XINPUT_GAMEPAD_DPAD_UP;
@@ -343,6 +359,7 @@ static bool xinput_joypad_button(unsigned port_num, uint16_t joykey)
          case HAT_RIGHT_MASK:
             return btn_word & XINPUT_GAMEPAD_DPAD_RIGHT;
       }
+
       return false; /* hat requested and no hat button down. */
    }
 
@@ -358,11 +375,11 @@ static bool xinput_joypad_button(unsigned port_num, uint16_t joykey)
 static int16_t xinput_joypad_axis (unsigned port_num, uint32_t joyaxis)
 {
    int xuser;
-   int16_t val  = 0;
-   int     axis = -1;
-
-   bool is_neg  = false;
-   bool is_pos  = false;
+   int16_t val         = 0;
+   int     axis        = -1;
+   bool is_neg         = false;
+   bool is_pos         = false;
+   XINPUT_GAMEPAD* pad = NULL;
 
    if (joyaxis == AXIS_NONE)
       return 0;
@@ -387,7 +404,7 @@ static int16_t xinput_joypad_axis (unsigned port_num, uint32_t joyaxis)
       is_pos = true;
    }
 
-   XINPUT_GAMEPAD* pad = &(g_xinput_states[xuser].xstate.Gamepad);
+   pad = &(g_xinput_states[xuser].xstate.Gamepad);
 
    switch (axis)
    {

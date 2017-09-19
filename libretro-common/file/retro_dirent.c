@@ -1,4 +1,4 @@
-/* Copyright  (C) 2010-2016 The RetroArch team
+/* Copyright  (C) 2010-2017 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this file (retro_dirent.c).
@@ -20,15 +20,20 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include <retro_common.h>
+
+#include <boolean.h>
+#include <retro_dirent.h>
 
 #if defined(_WIN32)
 #  ifdef _MSC_VER
 #    define setmode _setmode
 #  endif
+#include <sys/stat.h>
 #  ifdef _XBOX
 #    include <xtl.h>
 #    define INVALID_FILE_ATTRIBUTES -1
@@ -41,6 +46,7 @@
 #elif defined(VITA)
 #  include <psp2/io/fcntl.h>
 #  include <psp2/io/dirent.h>
+#include <psp2/io/stat.h>
 #else
 #  if defined(PSP)
 #    include <pspiofilemgr.h>
@@ -55,9 +61,9 @@
 #include <cell/cell_fs.h>
 #endif
 
-#include <boolean.h>
-#include <retro_stat.h>
-#include <retro_dirent.h>
+#if (defined(__CELLOS_LV2__) && !defined(__PSL1GHT__)) || defined(__QNX__) || defined(PSP)
+#include <unistd.h> /* stat() is defined here */
+#endif
 
 struct RDIR
 {
@@ -65,6 +71,7 @@ struct RDIR
    WIN32_FIND_DATA entry;
    HANDLE directory;
    bool next;
+   char path[PATH_MAX_LENGTH];
 #elif defined(VITA) || defined(PSP)
    SceUID directory;
    SceIoDirent entry;
@@ -89,10 +96,14 @@ struct RDIR *retro_opendir(const char *name)
       return NULL;
 
 #if defined(_WIN32)
+   path_buf[0] = '\0';
    snprintf(path_buf, sizeof(path_buf), "%s\\*", name);
    rdir->directory = FindFirstFile(path_buf, &rdir->entry);
 #elif defined(VITA) || defined(PSP)
    rdir->directory = sceIoDopen(name);
+#elif defined(_3DS)
+   rdir->directory = (name && *name)? opendir(name) : NULL;
+   rdir->entry     = NULL;
 #elif defined(__CELLOS_LV2__)
    rdir->error = cellFsOpendir(name, &rdir->directory);
 #else
@@ -121,10 +132,9 @@ int retro_readdir(struct RDIR *rdir)
 #if defined(_WIN32)
    if(rdir->next)
       return (FindNextFile(rdir->directory, &rdir->entry) != 0);
-   else {
-      rdir->next = true;
-      return (rdir->directory != INVALID_HANDLE_VALUE);
-   }
+
+   rdir->next = true;
+   return (rdir->directory != INVALID_HANDLE_VALUE);
 #elif defined(VITA) || defined(PSP)
    return (sceIoDread(rdir->directory, &rdir->entry) > 0);
 #elif defined(__CELLOS_LV2__)
@@ -173,17 +183,30 @@ bool retro_dirent_is_dir(struct RDIR *rdir, const char *path)
 #elif defined(__CELLOS_LV2__)
    CellFsDirent *entry = (CellFsDirent*)&rdir->entry;
    return (entry->d_type == CELL_FS_TYPE_DIRECTORY);
-#elif defined(DT_DIR)
+#else
+   struct stat buf;
+#if defined(DT_DIR)
    const struct dirent *entry = (const struct dirent*)rdir->entry;
    if (entry->d_type == DT_DIR)
       return true;
    /* This can happen on certain file systems. */
-   if (entry->d_type == DT_UNKNOWN || entry->d_type == DT_LNK)
-      return path_is_directory(path);
-   return false;
-#else
+   if (!(entry->d_type == DT_UNKNOWN || entry->d_type == DT_LNK))
+      return false;
+#endif
    /* dirent struct doesn't have d_type, do it the slow way ... */
-   return path_is_directory(path);
+   if (stat(path, &buf) < 0)
+      return false;
+   return S_ISDIR(buf.st_mode);
+#endif
+}
+
+void retro_dirent_include_hidden(struct RDIR *rdir, bool include_hidden)
+{
+#ifdef _WIN32
+   if (include_hidden)
+      rdir->entry.dwFileAttributes |= FILE_ATTRIBUTE_HIDDEN;
+   else
+      rdir->entry.dwFileAttributes &= ~FILE_ATTRIBUTE_HIDDEN;
 #endif
 }
 

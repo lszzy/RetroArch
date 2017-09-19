@@ -80,7 +80,7 @@ static const bool _vulkan_supp = true;
 static const bool _vulkan_supp = false;
 #endif
 
-#if defined(HAVE_OPENGLES) || defined(HAVE_OPENGLES2) || defined(HAVE_OPENGLES3)
+#if defined(HAVE_OPENGLES) || defined(HAVE_OPENGLES2) || defined(HAVE_OPENGLES3) || defined(HAVE_OPENGLES_3_1) || defined(HAVE_OPENGLES_3_2)
 static const bool _opengles_supp = true;
 #else
 static const bool _opengles_supp = false;
@@ -132,6 +132,12 @@ static const bool _xvideo_supp = false;
 static const bool _alsa_supp = true;
 #else
 static const bool _alsa_supp = false;
+#endif
+
+#ifdef HAVE_TINYALSA
+static const bool _tinyalsa_supp = true;
+#else
+static const bool _tinyalsa_supp = false;
 #endif
 
 #ifdef HAVE_COREAUDIO
@@ -192,6 +198,12 @@ static const bool _pulse_supp = false;
 static const bool _dsound_supp = true;
 #else
 static const bool _dsound_supp = false;
+#endif
+
+#ifdef HAVE_WASAPI
+static const bool _wasapi_supp = true;
+#else
+static const bool _wasapi_supp = false;
 #endif
 
 #ifdef HAVE_XAUDIO
@@ -272,7 +284,7 @@ static const bool _freetype_supp = true;
 static const bool _freetype_supp = false;
 #endif
 
-#ifdef HAVE_NETPLAY
+#ifdef HAVE_NETWORKING
 static const bool _netplay_supp = true;
 #else
 static const bool _netplay_supp = false;

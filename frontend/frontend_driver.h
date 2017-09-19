@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -22,10 +22,6 @@
 
 #include <boolean.h>
 #include <retro_common_api.h>
-
-#ifdef HAVE_CONFIG_H
-#include "../config.h"
-#endif
 
 RETRO_BEGIN_DECLS
 
@@ -54,6 +50,7 @@ enum frontend_architecture
    FRONTEND_ARCH_PPC,
    FRONTEND_ARCH_ARM,
    FRONTEND_ARCH_ARMV7,
+   FRONTEND_ARCH_ARMV8,
    FRONTEND_ARCH_MIPS,
    FRONTEND_ARCH_TILE
 };
@@ -79,9 +76,18 @@ typedef struct frontend_ctx_driver
    void (*content_loaded)(void);
    enum frontend_architecture (*get_architecture)(void);
    enum frontend_powerstate (*get_powerstate)(int *seconds, int *percent);
-   int  (*parse_drive_list)(void*);
+   int  (*parse_drive_list)(void*, bool);
    uint64_t (*get_total_mem)(void);
    uint64_t (*get_used_mem)(void);
+   void (*install_signal_handler)(void);
+   int (*get_signal_handler_state)(void);
+   void (*set_signal_handler_state)(int value);
+   void (*destroy_signal_handler_state)(void);
+   void (*attach_console)(void);
+   void (*detach_console)(void);
+#ifdef HAVE_LAKKA
+   void (*get_lakka_version)(char *, size_t);
+#endif
 
    const char *ident;
 
@@ -89,15 +95,18 @@ typedef struct frontend_ctx_driver
 } frontend_ctx_driver_t;
 
 extern frontend_ctx_driver_t frontend_ctx_gx;
+extern frontend_ctx_driver_t frontend_ctx_wiiu;
 extern frontend_ctx_driver_t frontend_ctx_ps3;
 extern frontend_ctx_driver_t frontend_ctx_xdk;
 extern frontend_ctx_driver_t frontend_ctx_qnx;
 extern frontend_ctx_driver_t frontend_ctx_darwin;
-extern frontend_ctx_driver_t frontend_ctx_linux;
+extern frontend_ctx_driver_t frontend_ctx_unix;
 extern frontend_ctx_driver_t frontend_ctx_psp;
 extern frontend_ctx_driver_t frontend_ctx_ctr;
 extern frontend_ctx_driver_t frontend_ctx_win32;
 extern frontend_ctx_driver_t frontend_ctx_xenon;
+extern frontend_ctx_driver_t frontend_ctx_emscripten;
+extern frontend_ctx_driver_t frontend_ctx_dos;
 extern frontend_ctx_driver_t frontend_ctx_null;
 
 /**
@@ -121,7 +130,7 @@ frontend_ctx_driver_t *frontend_get_ptr(void);
  **/
 frontend_ctx_driver_t *frontend_ctx_init_first(void);
 
-int frontend_driver_parse_drive_list(void *data);
+int frontend_driver_parse_drive_list(void *data, bool load_content);
 
 void frontend_driver_content_loaded(void);
 
@@ -158,6 +167,18 @@ bool frontend_driver_get_salamander_basename(char *s, size_t len);
 uint64_t frontend_driver_get_total_memory(void);
 
 uint64_t frontend_driver_get_used_memory(void);
+
+void frontend_driver_install_signal_handler(void);
+
+int frontend_driver_get_signal_handler_state(void);
+
+void frontend_driver_set_signal_handler_state(int value);
+
+void frontend_driver_destroy_signal_handler_state(void);
+
+void frontend_driver_attach_console(void);
+
+void frontend_driver_detach_console(void);
 
 RETRO_END_DECLS
 

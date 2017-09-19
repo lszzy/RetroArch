@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -22,10 +22,13 @@
 #include <boolean.h>
 #include <libretro.h>
 
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
+
 #include "../../defines/ps3_defines.h"
 
-#include "../../driver.h"
-#include "../../general.h"
+#include "../input_driver.h"
 
 #ifdef HAVE_MOUSE
 #ifndef __PSL1GHT__
@@ -96,11 +99,12 @@ static int16_t ps3_mouse_device_state(ps3_input_t *ps3,
 #endif
 
 static int16_t ps3_input_state(void *data,
+      rarch_joypad_info_t joypad_info,
       const struct retro_keybind **binds,
       unsigned port, unsigned device,
       unsigned idx, unsigned id)
 {
-   ps3_input_t *ps3 = (ps3_input_t*)data;
+   ps3_input_t *ps3           = (ps3_input_t*)data;
 
    if (!ps3)
       return 0;
@@ -108,9 +112,11 @@ static int16_t ps3_input_state(void *data,
    switch (device)
    {
       case RETRO_DEVICE_JOYPAD:
-         return input_joypad_pressed(ps3->joypad, port, binds[port], id);
+         return input_joypad_pressed(ps3->joypad, joypad_info, port, binds[port], id);
       case RETRO_DEVICE_ANALOG:
-         return input_joypad_analog(ps3->joypad, port, idx, id, binds[port]);
+         if (binds[port])
+            return input_joypad_analog(ps3->joypad, joypad_info, port, idx, id, binds[port]);
+         break;
 #if 0
       case RETRO_DEVICE_SENSOR_ACCELEROMETER:
          switch (id)
@@ -156,14 +162,13 @@ static void ps3_input_free_input(void *data)
 }
 
 
-static void* ps3_input_init(void)
+static void* ps3_input_init(const char *joypad_driver)
 {
-   settings_t *settings = config_get_ptr();
    ps3_input_t *ps3 = (ps3_input_t*)calloc(1, sizeof(*ps3));
    if (!ps3)
       return NULL;
 
-   ps3->joypad = input_joypad_init_driver(settings->input.joypad_driver, ps3);
+   ps3->joypad = input_joypad_init_driver(joypad_driver, ps3);
 
    if (ps3->joypad)
       ps3->joypad->init(ps3);
@@ -172,17 +177,6 @@ static void* ps3_input_init(void)
    cellMouseInit(MAX_MICE);
 #endif
    return ps3;
-}
-
-static bool ps3_input_key_pressed(void *data, int key)
-{
-   ps3_input_t *ps3     = (ps3_input_t*)data;
-   settings_t *settings = config_get_ptr();
-
-   if (input_joypad_pressed(ps3->joypad, 0, settings->input.binds[0], key))
-      return true;
-
-   return false;
 }
 
 static bool ps3_input_meta_key_pressed(void *data, int key)
@@ -272,7 +266,6 @@ input_driver_t input_ps3 = {
    ps3_input_init,
    ps3_input_poll,
    ps3_input_state,
-   ps3_input_key_pressed,
    ps3_input_meta_key_pressed,
    ps3_input_free_input,
    ps3_input_set_sensor_state,

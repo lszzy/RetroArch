@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -14,9 +14,10 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../input_autodetect.h"
-
+#include <stdint.h>
 #include <retro_inline.h>
+
+#include "../../tasks/tasks_internal.h"
 
 static uint64_t pad_state[MAX_PADS];
 static int16_t analog_state[MAX_PADS][2][2];
@@ -34,23 +35,20 @@ static INLINE int16_t convert_u8_to_s16(uint8_t val)
 
 static const char *ps3_joypad_name(unsigned pad)
 {
-   settings_t *settings = config_get_ptr();
-   return settings ? settings->input.device_names[pad] : NULL;
+   return "SixAxis Controller";
 }
 
 static void ps3_joypad_autodetect_add(unsigned autoconf_pad)
 {
-   settings_t *settings = config_get_ptr();
-   autoconfig_params_t params = {{0}};
-   strlcpy(settings->input.device_names[autoconf_pad],
-         "SixAxis Controller",
-         sizeof(settings->input.device_names[autoconf_pad]));
-
-   /* TODO - implement VID/PID? */
-   params.idx = autoconf_pad;
-   strlcpy(params.name, ps3_joypad_name(autoconf_pad), sizeof(params.name));
-   strlcpy(params.driver, ps3_joypad.ident, sizeof(params.driver));
-   input_config_autoconfigure_joypad(&params);
+   if (!input_autoconfigure_connect(
+            ps3_joypad_name(autoconf_pad),
+            NULL,
+            ps3_joypad.ident,
+            autoconf_pad,
+            0,
+            0
+            ))
+      input_config_set_device_name(autoconf_pad, ps3_joypad_name(autoconf_pad));
 }
 
 static bool ps3_joypad_init(void *data)
@@ -135,7 +133,7 @@ static void ps3_joypad_poll(void)
       {
          if ( (pad_info.port_status[port] & CELL_PAD_STATUS_CONNECTED) == 0 )
          {
-            input_config_autoconfigure_disconnect(port, ps3_joypad.ident);
+            input_autoconfigure_disconnect(port, ps3_joypad.ident);
             pads_connected[port] = 0;
          }
          else if ((pad_info.port_status[port] & CELL_PAD_STATUS_CONNECTED) > 0 )
@@ -183,7 +181,7 @@ static void ps3_joypad_poll(void)
          *state_cur |= (state_tmp.button[CELL_PAD_BTN_OFFSET_DIGITAL2] & CELL_PAD_CTRL_TRIANGLE) ? (UINT64_C(1) << RETRO_DEVICE_ID_JOYPAD_X) : 0;
          *state_cur |= (state_tmp.button[CELL_PAD_BTN_OFFSET_DIGITAL2] & CELL_PAD_CTRL_SQUARE) ? (UINT64_C(1) << RETRO_DEVICE_ID_JOYPAD_Y) : 0;
 
-         if (menu_driver_ctl(RARCH_MENU_CTL_IS_ALIVE, NULL))
+         if (menu_driver_is_alive())
          {
             int value = 0;
             if (cellSysutilGetSystemParamInt(CELL_SYSUTIL_SYSTEMPARAM_ID_ENTER_BUTTON_ASSIGN, &value) == 0)

@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -17,7 +17,6 @@
 #include <string.h>
 
 #include <file/config_file.h>
-#include <lists/dir_list.h>
 #include <lists/string_list.h>
 #include <compat/posix_string.h>
 #include <compat/strl.h>
@@ -28,25 +27,10 @@
 
 #include "core_option_manager.h"
 
-struct core_option
-{
-   char *desc;
-   char *key;
-   struct string_list *vals;
-   size_t index;
-};
+#include "../verbosity.h"
 
-struct core_option_manager
-{
-   config_file_t *conf;
-   char conf_path[PATH_MAX_LENGTH];
-
-   struct core_option *opts;
-   size_t size;
-   bool updated;
-};
-
-static bool core_option_manager_parse_variable(core_option_manager_t *opt, size_t idx,
+static bool core_option_manager_parse_variable(
+      core_option_manager_t *opt, size_t idx,
       const struct retro_variable *var)
 {
    const char *val_start      = NULL;
@@ -55,27 +39,27 @@ static bool core_option_manager_parse_variable(core_option_manager_t *opt, size_
    char *config_val           = NULL;
    struct core_option *option = (struct core_option*)&opt->opts[idx];
 
-   option->key = strdup(var->key);
-   value       = strdup(var->value);
-   desc_end    = strstr(value, "; ");
+   if (!string_is_empty(var->key))
+      option->key             = strdup(var->key);
+   if (!string_is_empty(var->value))
+      value                   = strdup(var->value);
+
+   if (!string_is_empty(value))
+      desc_end                = strstr(value, "; ");
 
    if (!desc_end)
-   {
-      free(value);
-      return false;
-   }
+      goto error;
 
    *desc_end    = '\0';
-   option->desc = strdup(value);
 
-   val_start    = desc_end + 2;
-   option->vals = string_split(val_start, "|");
+   if (!string_is_empty(value))
+      option->desc    = strdup(value);
+
+   val_start          = desc_end + 2;
+   option->vals       = string_split(val_start, "|");
 
    if (!option->vals)
-   {
-      free(value);
-      return false;
-   }
+      goto error;
 
    if (config_get_string(opt->conf, option->key, &config_val))
    {
@@ -96,6 +80,10 @@ static bool core_option_manager_parse_variable(core_option_manager_t *opt, size_
    free(value);
 
    return true;
+
+error:
+   free(value);
+   return false;
 }
 
 /**
@@ -179,7 +167,7 @@ core_option_manager_t *core_option_manager_new(const char *conf_path,
    if (!opt)
       return NULL;
 
-   if (*conf_path)
+   if (!string_is_empty(conf_path))
       opt->conf = config_file_new(conf_path);
    if (!opt->conf)
       opt->conf = config_file_new(NULL);
@@ -191,6 +179,9 @@ core_option_manager_t *core_option_manager_new(const char *conf_path,
 
    for (var = vars; var->key && var->value; var++)
       size++;
+
+   if (size == 0)
+      goto error;
 
    opt->opts = (struct core_option*)calloc(size, sizeof(*opt->opts));
    if (!opt->opts)
@@ -250,6 +241,7 @@ bool core_option_manager_flush(core_option_manager_t *opt)
                core_option_manager_get_val(opt, i));
    }
 
+   RARCH_LOG("Saved core options file to \"%s\"\n", opt->conf_path);
    return config_file_write(opt->conf, opt->conf_path);
 }
 
@@ -264,7 +256,7 @@ bool core_option_manager_flush(core_option_manager_t *opt)
  * successfully saved to disk, otherwise false (0).
  **/
 bool core_option_manager_flush_game_specific(
-      core_option_manager_t *opt, char* path)
+      core_option_manager_t *opt, const char* path)
 {
    size_t i;
    for (i = 0; i < opt->size; i++)

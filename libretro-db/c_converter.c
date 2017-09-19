@@ -1,4 +1,4 @@
-/* Copyright  (C) 2010-2016 The RetroArch team
+/* Copyright  (C) 2010-2017 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this file (c_converter.c).
@@ -28,8 +28,10 @@
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
-#include <assert.h>
 #include <rhash.h>
+
+#include <retro_assert.h>
+#include <string/stdstring.h>
 
 #include "libretrodb.h"
 
@@ -163,8 +165,8 @@ static dat_converter_bt_node_t* dat_converter_bt_node_insert(
       dat_converter_bt_node_t** node,
       dat_converter_map_t* map)
 {
-   assert(map->key);
-   assert(list->type == DAT_CONVERTER_MAP_LIST);
+   retro_assert(map->key);
+   retro_assert(list->type == DAT_CONVERTER_MAP_LIST);
 
    if (!*node)
    {
@@ -189,7 +191,8 @@ static dat_converter_bt_node_t* dat_converter_bt_node_insert(
       if (map->type == DAT_CONVERTER_LIST_MAP)
       {
          int i;
-         assert(list->values[(*node)->index].map.value.list->type 
+
+         retro_assert(list->values[(*node)->index].map.value.list->type
                == map->value.list->type);
 
          for (i = 0; i < map->value.list->count; i++)
@@ -238,7 +241,7 @@ static void dat_converter_list_append(dat_converter_list_t* dst, void* item)
       else
       {
          map->hash = djb2_calculate(map->key);
-         dat_converter_bt_node_t* new_node = 
+         dat_converter_bt_node_t* new_node =
             dat_converter_bt_node_insert(dst, &dst->bt_root, map);
 
          if (!new_node)
@@ -265,7 +268,7 @@ static void dat_converter_list_append(dat_converter_list_t* dst, void* item)
 static dat_converter_list_t* dat_converter_lexer(
       char* src, const char* dat_path)
 {
-   dat_converter_list_t* token_list = 
+   dat_converter_list_t* token_list =
       dat_converter_list_create(DAT_CONVERTER_TOKEN_LIST);
    dat_converter_token_t token      = {NULL, 1, 1, dat_path};
    bool quoted_token                = false;
@@ -329,7 +332,7 @@ static dat_converter_list_t* dat_converter_lexer(
 static dat_converter_list_t* dat_parser_table(
       dat_converter_list_item_t** start_token)
 {
-   dat_converter_list_t* parsed_table = 
+   dat_converter_list_t* parsed_table =
       dat_converter_list_create(DAT_CONVERTER_MAP_LIST);
    dat_converter_map_t map            = {0};
    dat_converter_list_item_t* current = *start_token;
@@ -339,13 +342,13 @@ static dat_converter_list_t* dat_parser_table(
 
       if (!map.key)
       {
-         if (!strcmp(current->token.label, ")"))
+         if (string_is_equal(current->token.label, ")"))
          {
             current++;
             *start_token = current;
             return parsed_table;
          }
-         else if (!strcmp(current->token.label, "("))
+         else if (string_is_equal(current->token.label, "("))
          {
             printf("%s:%d:%d: fatal error: Unexpected '(' instead of key\n",
                    current->token.fname,
@@ -361,14 +364,14 @@ static dat_converter_list_t* dat_parser_table(
       }
       else
       {
-         if (!strcmp(current->token.label, "("))
+         if (string_is_equal(current->token.label, "("))
          {
             current++;
             map.type = DAT_CONVERTER_LIST_MAP;
             map.value.list = dat_parser_table(&current);
             dat_converter_list_append(parsed_table, &map);
          }
-         else if (!strcmp(current->token.label, ")"))
+         else if (string_is_equal(current->token.label, ")"))
          {
             printf("%s:%d:%d: fatal error: Unexpected ')' instead of value\n",
                    current->token.fname,
@@ -457,7 +460,7 @@ static const char* dat_converter_get_match(
 {
    int i;
 
-   assert(match_key);
+   retro_assert(match_key);
 
    if (list->type != DAT_CONVERTER_MAP_LIST)
       return NULL;
@@ -466,15 +469,16 @@ static const char* dat_converter_get_match(
    {
       if (list->values[i].map.hash == match_key->hash)
       {
-         assert(!strcmp(list->values[i].map.key, match_key->value));
+         retro_assert(string_is_equal(list->values[i].map.key, match_key->value));
 
          if (match_key->next)
             return dat_converter_get_match(
                   list->values[i].map.value.list, match_key->next);
-         else  if ((list->values[i].map.type == DAT_CONVERTER_STRING_MAP))
+
+         if ((list->values[i].map.type == DAT_CONVERTER_STRING_MAP))
             return list->values[i].map.value.string;
-         else
-            return NULL;
+
+         return NULL;
 
       }
    }
@@ -486,12 +490,12 @@ static dat_converter_list_t* dat_converter_parser(
       dat_converter_list_t* lexer_list,
       dat_converter_match_key_t* match_key)
 {
-   bool skip = true;
-   dat_converter_list_item_t* current = lexer_list->values;
    dat_converter_map_t map;
+   dat_converter_list_item_t* current = lexer_list->values;
+   bool skip                          = true;
 
-   map.key = NULL;
-   map.type = DAT_CONVERTER_LIST_MAP;
+   map.key                            = NULL;
+   map.type                           = DAT_CONVERTER_LIST_MAP;
 
    if (!target)
    {
@@ -507,14 +511,14 @@ static dat_converter_list_t* dat_converter_parser(
    {
       if (!map.key)
       {
-         if (!strcmp(current->token.label, "game"))
+         if (string_is_equal(current->token.label, "game"))
             skip = false;
          map.key = current->token.label;
          current++;
       }
       else
       {
-         if (!strcmp(current->token.label, "("))
+         if (string_is_equal(current->token.label, "("))
          {
             current++;
             map.value.list = dat_parser_table(&current);
@@ -523,23 +527,27 @@ static dat_converter_list_t* dat_converter_parser(
                if (match_key)
                {
                   map.key = dat_converter_get_match(map.value.list, match_key);
+                  // If the key is not found, report, and mark it to be skipped.
                   if (!map.key)
                   {
-                     printf("missing match key '");
+                     printf("Missing match key '");
                      while (match_key->next)
                      {
                         printf("%s.", match_key->value);
                         match_key = match_key->next;
                      }
-                     printf("%s' in one of the entries\n", match_key->value);
-                     dat_converter_exit(1);
+                     printf("%s' on line %d\n", match_key->value, current->token.line_no);
+                     skip = true;
                   }
                }
                else
                   map.key = NULL;
 
-               dat_converter_list_append(target, &map);
-               skip = true;
+               // If we are still not to skip the entry, append it to the list.
+               if (!skip) {
+                  dat_converter_list_append(target, &map);
+                  skip = true;
+               }
             }
             else
                dat_converter_list_free(map.value.list);
@@ -615,7 +623,7 @@ dat_converter_rdb_mappings_t rdb_mappings[] =
    {"rom.serial",     "serial",         DAT_CONVERTER_RDB_TYPE_BINARY}
 };
 
-dat_converter_match_key_t* rdb_mappings_mk[(sizeof(rdb_mappings) 
+dat_converter_match_key_t* rdb_mappings_mk[(sizeof(rdb_mappings)
       / sizeof(*rdb_mappings))] = {0};
 
 static void dat_converter_value_provider_init(void)
@@ -637,6 +645,8 @@ static int dat_converter_value_provider(
       dat_converter_list_item_t** current_item, struct rmsgpack_dom_value* out)
 {
    int i;
+   struct rmsgpack_dom_pair* current = NULL;
+
    out->type          = RDT_MAP;
    out->val.map.len   = 0;
    out->val.map.items = calloc((sizeof(rdb_mappings) / sizeof(*rdb_mappings)),
@@ -644,16 +654,16 @@ static int dat_converter_value_provider(
 
    (*current_item)--;
 
-   assert((*current_item)->map.type == DAT_CONVERTER_LIST_MAP);
+   retro_assert((*current_item)->map.type == DAT_CONVERTER_LIST_MAP);
 
    dat_converter_list_t* list = (*current_item)->map.value.list;
 
    if (!list)
       return 1;
 
-   assert(list->type == DAT_CONVERTER_MAP_LIST);
+   retro_assert(list->type == DAT_CONVERTER_MAP_LIST);
 
-   struct rmsgpack_dom_pair* current = out->val.map.items;
+   current = out->val.map.items;
 
    for (i = 0; i < (sizeof(rdb_mappings) / sizeof(*rdb_mappings)); i++)
    {
@@ -689,7 +699,7 @@ static int dat_converter_value_provider(
       case DAT_CONVERTER_RDB_TYPE_HEX:
          current->value.type = RDT_BINARY;
          current->value.val.binary.len  = strlen(value) / 2;
-         current->value.val.binary.buff = 
+         current->value.val.binary.buff =
             malloc(current->value.val.binary.len);
          {
             const char* hex_char = value;
@@ -720,7 +730,7 @@ static int dat_converter_value_provider(
          }
          break;
       default:
-         assert(0);
+         retro_assert(0);
          break;
       }
       current++;
@@ -806,11 +816,11 @@ int main(int argc, char** argv)
       dat_converter_exit(1);
    }
 
-   dat_converter_list_item_t* current_item = 
+   dat_converter_list_item_t* current_item =
       &dat_parser_list->values[dat_parser_list->count];
 
    dat_converter_value_provider_init();
-   libretrodb_create(rdb_file, 
+   libretrodb_create(rdb_file,
          (libretrodb_value_provider)&dat_converter_value_provider,
          &current_item);
    dat_converter_value_provider_free();
@@ -827,4 +837,3 @@ int main(int argc, char** argv)
 
    return 0;
 }
-

@@ -1,4 +1,4 @@
-/* Copyright  (C) 2010-2016 The RetroArch team
+/* Copyright  (C) 2010-2017 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this file (rpng_encode.c).
@@ -24,8 +24,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <encodings/crc32.h>
 #include <streams/file_stream.h>
-#include <file/archive_file.h>
+#include <streams/trans_stream.h>
 
 #include "rpng_internal.h"
 
@@ -35,8 +36,6 @@
    ret = false; \
    goto end; \
 } while(0)
-
-#ifdef HAVE_ZLIB_DEFLATE
 
 static void dword_write_be(uint8_t *buf, uint32_t val)
 {
@@ -49,9 +48,7 @@ static void dword_write_be(uint8_t *buf, uint32_t val)
 static bool png_write_crc(RFILE *file, const uint8_t *data, size_t size)
 {
    uint8_t crc_raw[4] = {0};
-   const struct file_archive_file_backend *stream_backend = 
-      file_archive_get_default_file_backend();
-   uint32_t crc = stream_backend->stream_crc_calculate(0, data, size);
+   uint32_t crc       = encoding_crc32(0, data, size);
 
    dword_write_be(crc_raw, crc);
    return filestream_write(file, crc_raw, sizeof(crc_raw)) == sizeof(crc_raw);
@@ -216,7 +213,7 @@ static bool rpng_save_image(const char *path,
    bool ret = true;
    struct png_ihdr ihdr = {0};
 
-   const struct file_archive_file_backend *stream_backend = NULL;
+   const struct trans_stream_backend *stream_backend = NULL;
    size_t encode_buf_size  = 0;
    uint8_t *encode_buf     = NULL;
    uint8_t *deflate_buf    = NULL;
@@ -228,11 +225,13 @@ static bool rpng_save_image(const char *path,
    uint8_t *prev_encoded   = NULL;
    uint8_t *encode_target  = NULL;
    void *stream            = NULL;
+   uint32_t total_in       = 0;
+   uint32_t total_out      = 0;
    RFILE *file             = filestream_open(path, RFILE_MODE_WRITE, -1);
    if (!file)
       GOTO_END_ERROR();
 
-   stream_backend = file_archive_get_default_file_backend();
+   stream_backend = trans_stream_get_zlib_deflate_backend();
 
    if (filestream_write(file, png_magic, sizeof(png_magic)) != sizeof(png_magic))
       GOTO_END_ERROR();
@@ -312,7 +311,6 @@ static bool rpng_save_image(const char *path,
          {
             filter = 4;
             chosen_filtered = paeth_filtered;
-            min_sad = paeth_score;
          }
 
          *encode_target++ = filter;
@@ -331,26 +329,23 @@ static bool rpng_save_image(const char *path,
    if (!stream)
       GOTO_END_ERROR();
 
-   stream_backend->stream_set(
+   stream_backend->set_in(
          stream,
-         encode_buf_size,
-         encode_buf_size * 2,
          encode_buf,
-         deflate_buf + 8);
+         (unsigned)encode_buf_size);
+   stream_backend->set_out(
+         stream,
+         deflate_buf + 8,
+         (unsigned)(encode_buf_size * 2));
 
-   stream_backend->stream_compress_init(stream, 9);
-
-   if (stream_backend->stream_compress_data_to_file(stream) != 1)
+   if (!stream_backend->trans(stream, true, &total_in, &total_out, NULL))
    {
-      stream_backend->stream_compress_free(stream);
       GOTO_END_ERROR();
    }
 
-   stream_backend->stream_compress_free(stream);
-
    memcpy(deflate_buf + 4, "IDAT", 4);
-   dword_write_be(deflate_buf + 0,        stream_backend->stream_get_total_out(stream));
-   if (!png_write_idat(file, deflate_buf, stream_backend->stream_get_total_out(stream) + 8))
+   dword_write_be(deflate_buf + 0,        ((uint32_t)total_out));
+   if (!png_write_idat(file, deflate_buf, ((size_t)total_out + 8)))
       GOTO_END_ERROR();
 
    if (!png_write_iend(file))
@@ -368,7 +363,13 @@ end:
    free(paeth_filtered);
 
    if (stream_backend)
-      stream_backend->stream_free(stream);
+   {
+      if (stream)
+      {
+         if (stream_backend->stream_free)
+            stream_backend->stream_free(stream);
+      }
+   }
    return ret;
 }
 
@@ -385,5 +386,3 @@ bool rpng_save_image_bgr24(const char *path, const uint8_t *data,
    return rpng_save_image(path, (const uint8_t*)data,
          width, height, pitch, 3);
 }
-
-#endif

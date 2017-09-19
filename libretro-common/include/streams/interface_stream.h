@@ -1,4 +1,4 @@
-/* Copyright  (C) 2010-2015 The RetroArch team
+/* Copyright  (C) 2010-2017 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this file (interface_stream.h).
@@ -25,19 +25,23 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <sys/types.h>
 
 #include <retro_common_api.h>
 #include <boolean.h>
 
+RETRO_BEGIN_DECLS
+
+typedef struct _chd_file chd_file;
+
 enum intfstream_type
 {
    INTFSTREAM_FILE = 0,
-   INTFSTREAM_MEMORY
+   INTFSTREAM_MEMORY,
+   INTFSTREAM_CHD
 };
 
-typedef struct intfstream_internal intfstream_internal_t;
-
-typedef struct intfstream intfstream_t;
+typedef struct intfstream_internal intfstream_internal_t, intfstream_t;
 
 typedef struct intfstream_info
 {
@@ -50,6 +54,11 @@ typedef struct intfstream_info
       } buf;
       bool writable;
    } memory;
+   struct
+   {
+      chd_file *handle;
+      int32_t track;
+   } chd;
    enum intfstream_type type;
 } intfstream_info_t;
 
@@ -82,5 +91,7 @@ int intfstream_tell(intfstream_internal_t *intf);
 void intfstream_putc(intfstream_internal_t *intf, int c);
 
 int intfstream_close(intfstream_internal_t *intf);
+
+RETRO_END_DECLS
 
 #endif

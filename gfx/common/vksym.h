@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C)      2016 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2016-2017 - Hans-Kristian Arntzen
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -47,6 +47,6 @@
 #define VK_USE_PLATFORM_XLIB_KHR
 #endif
 
-#include "../../libretro-common/include/vulkan/vulkan_symbol_wrapper.h"
+#include <vulkan/vulkan_symbol_wrapper.h>
 
 #endif

@@ -1,5 +1,5 @@
 /* RetroArch - A frontend for libretro.
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  * RetroArch is free software: you can redistribute it and/or modify it under the terms
  * of the GNU General Public License as published by the Free Software Found-
@@ -18,16 +18,25 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
-#include "general.h"
-#include "system.h"
 
 #include <file/file_path.h>
 #include <rthreads/rthreads.h>
 
-#include "ui_qt.h"
-#include "../ui_companion_driver.h"
-#include "../../tasks/tasks_internal.h"
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
+
+#ifdef HAVE_QT_WRAPPER
 #include "qt/wrapper/wrapper.h"
+#else
+#include "ui_qt.h"
+#endif
+
+#include "../ui_companion_driver.h"
+#include "../../core.h"
+#include "../../configuration.h"
+#include "../../retroarch.h"
+#include "../../tasks/tasks_internal.h"
 
 #ifdef HAVE_QT_WRAPPER
 struct Wimp* wimp;
@@ -145,9 +154,16 @@ const ui_companion_driver_t ui_companion_qt = {
    NULL,
    NULL,
    NULL,
+#ifdef HAVE_QT_WRAPPER
+   NULL,
+   NULL,
+   NULL,
+   NULL,
+#else
    &ui_browser_window_qt,
    &ui_msg_window_qt,
    &ui_window_qt,
    &ui_application_qt,
+#endif
    "qt",
 };

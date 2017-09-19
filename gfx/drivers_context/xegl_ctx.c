@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
 *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
-*  Copyright (C) 2011-2016 - Daniel De Matteis
+*  Copyright (C) 2011-2017 - Daniel De Matteis
 * 
 *  RetroArch is free software: you can redistribute it and/or modify it under the terms
 *  of the GNU General Public License as published by the Free Software Found-
@@ -17,14 +17,28 @@
 /* X/EGL context. Mostly used for testing GLES code paths. */
 
 #include <stdint.h>
+#include <stdlib.h>
 
-#include "../../driver.h"
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
+
+#include "../../frontend/frontend_driver.h"
+
 #include "../common/egl_common.h"
 #include "../common/gl_common.h"
 #include "../common/x11_common.h"
 
+#ifdef HAVE_XINERAMA
+#include "../common/xinerama_common.h"
+#endif
+
 #ifndef EGL_OPENGL_ES3_BIT_KHR
 #define EGL_OPENGL_ES3_BIT_KHR 0x0040
+#endif
+
+#ifndef EGL_PLATFORM_X11_KHR
+#define EGL_PLATFORM_X11_KHR 0x31D5
 #endif
 
 typedef struct
@@ -32,11 +46,10 @@ typedef struct
 #ifdef HAVE_EGL
    egl_ctx_data_t egl;
 #endif
-   XF86VidModeModeInfo desktop_mode;
    bool should_reset_mode;
 } xegl_ctx_data_t;
 
-static enum gfx_ctx_api x_api;
+static enum gfx_ctx_api x_api = GFX_CTX_NONE;
 
 static int x_nul_handler(Display *dpy, XErrorEvent *event)
 {
@@ -56,9 +69,11 @@ static void gfx_ctx_xegl_destroy(void *data)
 
    if (g_x11_win)
    {
+#ifdef HAVE_XINERAMA
       /* Save last used monitor for later. */
-      x11_save_last_used_monitor(RootWindow(
+      xinerama_save_last_used_monitor(RootWindow(
                g_x11_dpy, DefaultScreen(g_x11_dpy)));
+#endif
       x11_window_destroy(false);
    }
 
@@ -66,7 +81,7 @@ static void gfx_ctx_xegl_destroy(void *data)
 
    if (xegl->should_reset_mode)
    {
-      x11_exit_fullscreen(g_x11_dpy, &xegl->desktop_mode);
+      x11_exit_fullscreen(g_x11_dpy);
       xegl->should_reset_mode = false;
    }
 
@@ -77,15 +92,6 @@ static void gfx_ctx_xegl_destroy(void *data)
     */
 }
 
-static bool gfx_ctx_xegl_set_resize(void *data,
-   unsigned width, unsigned height)
-{
-   (void)data;
-   (void)width;
-   (void)height;
-   return false;
-}
-
 #define XEGL_ATTRIBS_BASE \
 EGL_SURFACE_TYPE,    EGL_WINDOW_BIT, \
 EGL_RED_SIZE,        1, \
@@ -94,7 +100,7 @@ EGL_BLUE_SIZE,       1, \
 EGL_ALPHA_SIZE,      0, \
 EGL_DEPTH_SIZE,      0
 
-static void *gfx_ctx_xegl_init(void *video_driver)
+static void *gfx_ctx_xegl_init(video_frame_info_t *video_info, void *video_driver)
 {
 #ifdef HAVE_EGL
    static const EGLint egl_attribs_gl[] = {
@@ -164,8 +170,8 @@ static void *gfx_ctx_xegl_init(void *video_driver)
       goto error;
 
 #ifdef HAVE_EGL
-   if (!egl_init_context(&xegl->egl, (EGLNativeDisplayType)g_x11_dpy,
-            &major, &minor, &n, attrib_ptr))
+   if (!egl_init_context(&xegl->egl, EGL_PLATFORM_X11_KHR,
+            (EGLNativeDisplayType)g_x11_dpy, &major, &minor, &n, attrib_ptr))
    {
       egl_report_error();
       goto error;
@@ -251,28 +257,25 @@ static EGLint *xegl_fill_attribs(xegl_ctx_data_t *xegl, EGLint *attr)
 static void gfx_ctx_xegl_set_swap_interval(void *data, unsigned swap_interval);
 
 static bool gfx_ctx_xegl_set_video_mode(void *data,
-   unsigned width, unsigned height,
-   bool fullscreen)
+      video_frame_info_t *video_info,
+      unsigned width, unsigned height,
+      bool fullscreen)
 {
    XEvent event;
    EGLint egl_attribs[16];
-   EGLint *attr;
    EGLint vid, num_visuals;
-   bool windowed_full;
-   bool true_full = false;
-   int x_off = 0;
-   int y_off = 0;
-   XVisualInfo temp = {0};
+   EGLint *attr             = NULL;
+   bool true_full           = false;
+   int x_off                = 0;
+   int y_off                = 0;
+   XVisualInfo temp         = {0};
    XSetWindowAttributes swa = {0};
-   XVisualInfo *vi = NULL;
-   settings_t *settings = config_get_ptr();
-   xegl_ctx_data_t *xegl = (xegl_ctx_data_t*)data;
+   XVisualInfo *vi          = NULL;
+   xegl_ctx_data_t *xegl    = (xegl_ctx_data_t*)data;
 
    int (*old_handler)(Display*, XErrorEvent*) = NULL;
 
-   x11_install_sighandlers();
-
-   windowed_full = settings->video.windowed_fullscreen;
+   frontend_driver_install_signal_handler();
 
    attr = egl_attribs;
    attr = xegl_fill_attribs(xegl, attr);
@@ -295,9 +298,9 @@ static bool gfx_ctx_xegl_set_video_mode(void *data,
       ButtonPressMask | ButtonReleaseMask | KeyReleaseMask;
    swa.override_redirect = fullscreen ? True : False;
 
-   if (fullscreen && !windowed_full)
+   if (fullscreen && !video_info->windowed_fullscreen)
    {
-      if (x11_enter_fullscreen(g_x11_dpy, width, height, &xegl->desktop_mode))
+      if (x11_enter_fullscreen(video_info, g_x11_dpy, width, height))
       {
          xegl->should_reset_mode = true;
          true_full = true;
@@ -306,8 +309,8 @@ static bool gfx_ctx_xegl_set_video_mode(void *data,
          RARCH_ERR("[X/EGL]: Entering true fullscreen failed. Will attempt windowed mode.\n");
    }
 
-   if (settings->video.monitor_index)
-      g_x11_screen = settings->video.monitor_index - 1;
+   if (video_info->monitor_index)
+      g_x11_screen = video_info->monitor_index - 1;
 
 #ifdef HAVE_XINERAMA
    if (fullscreen || g_x11_screen != 0)
@@ -315,7 +318,7 @@ static bool gfx_ctx_xegl_set_video_mode(void *data,
       unsigned new_width  = width;
       unsigned new_height = height;
 
-      if (x11_get_xinerama_coord(g_x11_dpy, g_x11_screen,
+      if (xinerama_get_coord(g_x11_dpy, g_x11_screen,
                &x_off, &y_off, &new_width, &new_height))
          RARCH_LOG("[X/EGL]: Using Xinerama on screen #%u.\n", g_x11_screen);
       else
@@ -345,11 +348,11 @@ static bool gfx_ctx_xegl_set_video_mode(void *data,
       goto error;
    }
 
-   if (!egl_create_surface(&xegl->egl, (EGLNativeWindowType)g_x11_win))
+   if (!egl_create_surface(&xegl->egl, (void*)g_x11_win))
       goto error;
 
    x11_set_window_attr(g_x11_dpy, g_x11_win);
-   x11_update_window_title(NULL);
+   x11_update_title(NULL, video_info);
 
    if (fullscreen)
       x11_show_mouse(g_x11_dpy, g_x11_win, false);
@@ -420,22 +423,13 @@ error:
 
 
 static void gfx_ctx_xegl_input_driver(void *data,
-   const input_driver_t **input, void **input_data)
+      const char *joypad_name,
+      const input_driver_t **input, void **input_data)
 {
-   void *xinput = input_x.init();
-
-   (void)data;
+   void *xinput = input_x.init(joypad_name);
 
    *input       = xinput ? &input_x : NULL;
    *input_data  = xinput;
-}
-
-static bool gfx_ctx_xegl_has_focus(void *data)
-{
-   if (!g_egl_inited)
-      return false;
-
-   return x11_has_focus(data);
 }
 
 static bool gfx_ctx_xegl_suppress_screensaver(void *data, bool enable)
@@ -496,7 +490,7 @@ static void gfx_ctx_xegl_show_mouse(void *data, bool state)
    x11_show_mouse(g_x11_dpy, g_x11_win, state);
 }
 
-static void gfx_ctx_xegl_swap_buffers(void *data)
+static void gfx_ctx_xegl_swap_buffers(void *data, void *data2)
 {
    xegl_ctx_data_t *xegl = (xegl_ctx_data_t*)data;
 
@@ -555,7 +549,6 @@ static gfx_ctx_proc_t gfx_ctx_xegl_get_proc_address(const char *symbol)
 {
    switch (x_api)
    {
-      case GFX_CTX_OPENGL_API:
       case GFX_CTX_OPENGL_ES_API:
       case GFX_CTX_OPENVG_API:
 #ifdef HAVE_EGL
@@ -563,6 +556,8 @@ static gfx_ctx_proc_t gfx_ctx_xegl_get_proc_address(const char *symbol)
 #else
          break;
 #endif
+      case GFX_CTX_OPENGL_API:
+         break;
       case GFX_CTX_NONE:
       default:
          break;
@@ -596,10 +591,10 @@ const gfx_ctx_driver_t gfx_ctx_x_egl =
    NULL, /* get_video_output_next */
    x11_get_metrics,
    NULL,
-   x11_update_window_title,
+   x11_update_title,
    x11_check_window,
-   gfx_ctx_xegl_set_resize,
-   gfx_ctx_xegl_has_focus,
+   NULL, /* set_resize */
+   x11_has_focus,
    gfx_ctx_xegl_suppress_screensaver,
    gfx_ctx_xegl_has_windowed,
    gfx_ctx_xegl_swap_buffers,
@@ -611,5 +606,7 @@ const gfx_ctx_driver_t gfx_ctx_x_egl =
    "x-egl",
    gfx_ctx_xegl_get_flags,
    gfx_ctx_xegl_set_flags,
-   gfx_ctx_xegl_bind_hw_render
+   gfx_ctx_xegl_bind_hw_render,
+   NULL,
+   NULL
 };

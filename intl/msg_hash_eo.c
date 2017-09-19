@@ -1,5 +1,5 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -16,28 +16,33 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <compat/strl.h>
+#include <string/stdstring.h>
+
+#include "../configuration.h"
 #include "../msg_hash.h"
 
-int menu_hash_get_help_eo(uint32_t hash, char *s, size_t len)
+int menu_hash_get_help_eo_enum(enum msg_hash_enums msg, char *s, size_t len)
 {
-   int ret = 0;
-
-   switch (hash)
+   switch (msg)
    {
-      case 0:
+      case MSG_UNKNOWN:
       default:
-         ret = -1;
+         if (string_is_empty(s))
+            strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NO_INFORMATION_AVAILABLE), len);
+         /* TODO/FIXME - should change this to -1 once we add more entries */
          break;
    }
 
-   return ret;
+   /* TODO/FIXME - should change this to 0 once we add more entries */
+   return -1;
 }
 
 const char *msg_hash_to_str_eo(enum msg_hash_enums msg)
 {
    switch (msg)
    {
-      case 0:
+      #include "msg_hash_eo.h"
       default:
          break;
    }

@@ -1,5 +1,5 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2010-2016 - Hans-Kristian Arntzen
+ *  Copyright (C) 2010-2017 - Hans-Kristian Arntzen
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -48,16 +48,27 @@ enum slang_texture_semantic
    // Canonical name: "PassFeedback#", e.g. "PassFeedback2".
    SLANG_TEXTURE_SEMANTIC_PASS_FEEDBACK = 4,
 
+   // Inputs from static textures, defined by the user.
+   // There is no canonical name, and the only way to use these semantics are by
+   // remapping.
+   SLANG_TEXTURE_SEMANTIC_USER = 5,
+
    SLANG_NUM_TEXTURE_SEMANTICS,
    SLANG_INVALID_TEXTURE_SEMANTIC = -1
 };
 
 enum slang_semantic
 {
+   // mat4, MVP
    SLANG_SEMANTIC_MVP = 0,
+   // vec4, viewport size of current pass
    SLANG_SEMANTIC_OUTPUT = 1,
+   // vec4, viewport size of final pass
    SLANG_SEMANTIC_FINAL_VIEWPORT = 2,
+   // uint, frame count with modulo
    SLANG_SEMANTIC_FRAME_COUNT = 3,
+   // float, user defined parameter, arrayed
+   SLANG_SEMANTIC_FLOAT_PARAMETER = 4,
 
    SLANG_NUM_SEMANTICS,
    SLANG_INVALID_SEMANTIC = -1
@@ -69,24 +80,28 @@ enum slang_stage
    SLANG_STAGE_FRAGMENT_MASK = 1 << 1
 };
 
-// Vulkan minimum limit.
+/* Vulkan minimum limit. */
 #define SLANG_NUM_BINDINGS 16
 
 struct slang_texture_semantic_meta
 {
    size_t ubo_offset = 0;
+   size_t push_constant_offset = 0;
    unsigned binding = 0;
    uint32_t stage_mask = 0;
 
    bool texture = false;
    bool uniform = false;
+   bool push_constant = false;
 };
 
 struct slang_semantic_meta
 {
    size_t ubo_offset = 0;
+   size_t push_constant_offset = 0;
    unsigned num_components = 0;
    bool uniform = false;
+   bool push_constant = false;
 };
 
 struct slang_texture_semantic_map
@@ -95,20 +110,30 @@ struct slang_texture_semantic_map
    unsigned index;
 };
 
+struct slang_semantic_map
+{
+   slang_semantic semantic;
+   unsigned index;
+};
+
 struct slang_reflection
 {
    slang_reflection();
 
    size_t ubo_size = 0;
+   size_t push_constant_size = 0;
+
    unsigned ubo_binding = 0;
    uint32_t ubo_stage_mask = 0;
+   uint32_t push_constant_stage_mask = 0;
 
    std::vector<slang_texture_semantic_meta> semantic_textures[SLANG_NUM_TEXTURE_SEMANTICS];
    slang_semantic_meta semantics[SLANG_NUM_SEMANTICS];
+   std::vector<slang_semantic_meta> semantic_float_parameters;
 
    const std::unordered_map<std::string, slang_texture_semantic_map> *texture_semantic_map = nullptr;
    const std::unordered_map<std::string, slang_texture_semantic_map> *texture_semantic_uniform_map = nullptr;
-   const std::unordered_map<std::string, slang_semantic> *semantic_map = nullptr;
+   const std::unordered_map<std::string, slang_semantic_map> *semantic_map = nullptr;
    unsigned pass_number = 0;
 };
 

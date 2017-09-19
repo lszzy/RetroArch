@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -14,11 +14,22 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../d3d/d3d.h"
-#include "../font_driver.h"
-#include "../../general.h"
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
 
+#include "../drivers/d3d.h"
+#include "../font_driver.h"
+
+#include "../../configuration.h"
+
+#if defined(HAVE_D3D9)
 #include "../include/d3d9/d3dx9core.h"
+#elif defined(HAVE_D3D8)
+#include "../include/d3d8/d3dx8core.h"
+#endif
+
+#include <tchar.h>
 
 typedef struct
 {
@@ -28,7 +39,8 @@ typedef struct
 } d3dfonts_t;
 
 static void *d3dfonts_w32_init_font(void *video_data,
-      const char *font_path, float font_size)
+      const char *font_path, float font_size,
+      bool is_threaded)
 {
    uint32_t r, g, b;
    d3dfonts_t *d3dfonts = NULL;
@@ -39,7 +51,7 @@ static void *d3dfonts_w32_init_font(void *video_data,
       OUT_TT_PRECIS,
       CLIP_DEFAULT_PRECIS,
       DEFAULT_PITCH,
-      "Verdana" /* Hardcode FTL */
+      _T("Verdana") /* Hardcode FTL */
    };
 
    d3dfonts = (d3dfonts_t*)calloc(1, sizeof(*d3dfonts));
@@ -49,9 +61,9 @@ static void *d3dfonts_w32_init_font(void *video_data,
 
    (void)font_path;
 
-   r               = (settings->video.msg_color_r * 255);
-   g               = (settings->video.msg_color_g * 255);
-   b               = (settings->video.msg_color_b * 255);
+   r               = (settings->floats.video_msg_color_r * 255);
+   g               = (settings->floats.video_msg_color_g * 255);
+   b               = (settings->floats.video_msg_color_b * 255);
    r &= 0xff;
    g &= 0xff;
    b &= 0xff;
@@ -67,7 +79,7 @@ static void *d3dfonts_w32_init_font(void *video_data,
    return NULL;
 }
 
-static void d3dfonts_w32_free_font(void *data)
+static void d3dfonts_w32_free_font(void *data, bool is_threaded)
 {
    d3dfonts_t *d3dfonts = (d3dfonts_t*)data;
 
@@ -82,7 +94,7 @@ static void d3dfonts_w32_free_font(void *data)
    d3dfonts = NULL;
 }
 
-static void d3dfonts_w32_render_msg(void *data, const char *msg,
+static void d3dfonts_w32_render_msg(video_frame_info_t *video_info, void *data, const char *msg,
       const void *userdata)
 {
    const struct font_params *params = (const struct font_params*)userdata;
@@ -92,6 +104,7 @@ static void d3dfonts_w32_render_msg(void *data, const char *msg,
       return;
    if (!msg)
       return;
+   d3d_set_viewports(d3dfonts->d3d->dev, &d3dfonts->d3d->final_viewport);
    if (!(SUCCEEDED(d3dfonts->d3d->dev->BeginScene())))
       return;
 

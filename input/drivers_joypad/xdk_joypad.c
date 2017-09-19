@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -14,7 +14,10 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../input_autodetect.h"
+#include <stdint.h>
+
+#include "../input_driver.h"
+#include "../../tasks/tasks_internal.h"
 
 static uint64_t pad_state[MAX_PADS];
 static int16_t analog_state[MAX_PADS][2][2];
@@ -35,24 +38,19 @@ static const char* const XBOX_CONTROLLER_NAMES[4] =
 
 static const char *xdk_joypad_name(unsigned pad)
 {
-   settings_t *settings = config_get_ptr();
-   return settings ? settings->input.device_names[pad] : NULL;
+   return input_config_get_device_name(pad);
 }
 
 static void xdk_joypad_autodetect_add(unsigned autoconf_pad)
 {
-   autoconfig_params_t params = {{0}};
-   settings_t *settings       = config_get_ptr();
-
-   strlcpy(settings->input.device_names[autoconf_pad],
-         "XInput Controller",
-         sizeof(settings->input.device_names[autoconf_pad]));
-
-   /* TODO - implement VID/PID? */
-   params.idx = autoconf_pad;
-   strlcpy(params.name, xdk_joypad_name(autoconf_pad), sizeof(params.name));
-   strlcpy(params.driver, xdk_joypad.ident, sizeof(params.driver));
-   input_config_autoconfigure_joypad(&params);
+   if (!input_autoconfigure_connect(
+         xdk_joypad_name(autoconf_pad),
+         NULL,
+         xdk_joypad.ident,
+         autoconf_pad,
+         0,
+         0))
+      input_config_set_device_name(autoconf_pad, xdk_joypad_name(autoconf_pad));
 }
 
 static bool xdk_joypad_init(void *data)
@@ -159,10 +157,10 @@ static void xdk_joypad_poll(void)
          if(gamepads[port])
             XInputClose(gamepads[port]);
 
-         gamepads[port] = 0;
+         gamepads[port]  = 0;
          pad_state[port] = 0;
 
-         input_config_autoconfigure_disconnect(port, xdk_joypad.ident);
+         input_autoconfigure_disconnect(port, xdk_joypad.ident);
       }
 
       /* handle inserted devices. */

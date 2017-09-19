@@ -1,4 +1,4 @@
-/* Copyright  (C) 2010-2016 The RetroArch team
+/* Copyright  (C) 2010-2017 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this file (rmsgpack_dom.c).
@@ -316,16 +316,16 @@ void rmsgpack_dom_value_print(struct rmsgpack_dom_value *obj)
          break;
       case RDT_INT:
 #ifdef _WIN32
-         printf("%I64d", (signed long long)obj->val.int_);
+         printf("%I64d", (int64_t)obj->val.int_);
 #else
-         printf("%lld", (signed long long)obj->val.int_);
+         printf("%lld", (int64_t)obj->val.int_);
 #endif
          break;
       case RDT_UINT:
 #ifdef _WIN32
-         printf("%I64u", (unsigned long long)obj->val.uint_);
+         printf("%I64u", (uint64_t)obj->val.uint_);
 #else
-         printf("%llu",  (unsigned long long)obj->val.uint_);
+         printf("%llu",  (uint64_t)obj->val.uint_);
 #endif
          break;
       case RDT_STRING:
@@ -463,8 +463,8 @@ int rmsgpack_dom_read_into(RFILE *fd, ...)
       if (!key_name)
          goto clean;
 
-      key.type        = RDT_STRING;
-      key.val.string.len  = strlen(key_name);
+      key.type            = RDT_STRING;
+      key.val.string.len  = (uint32_t)strlen(key_name);
       key.val.string.buff = (char *) key_name;
 
       value = rmsgpack_dom_value_map_value(&map, &key);

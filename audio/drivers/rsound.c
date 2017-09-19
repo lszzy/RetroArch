@@ -1,5 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -55,28 +56,26 @@ static void err_cb(void *userdata)
    scond_signal(rsd->cond);
 }
 
-static void *rs_init(const char *device, unsigned rate, unsigned latency)
+static void *rs_init(const char *device, unsigned rate, unsigned latency,
+      unsigned block_frames,
+      unsigned *new_rate)
 {
    int channels, format;
-   rsd_t *rsd = (rsd_t*)calloc(1, sizeof(rsd_t));
+   rsound_t *rd  = NULL;
+   rsd_t *rsd    = (rsd_t*)calloc(1, sizeof(rsd_t));
    if (!rsd)
       return NULL;
 
-   rsound_t *rd;
-
    if (rsd_init(&rd) < 0)
-   {
-      free(rsd);
-      return NULL;
-   }
+      goto error;
 
    rsd->cond_lock = slock_new();
-   rsd->cond = scond_new();
+   rsd->cond      = scond_new();
 
-   rsd->buffer = fifo_new(1024 * 4);
+   rsd->buffer    = fifo_new(1024 * 4);
 
-   channels = 2;
-   format   = RSD_S16_NE;
+   channels       = 2;
+   format         = RSD_S16_NE;
 
    rsd_set_param(rd, RSD_CHANNELS, &channels);
    rsd_set_param(rd, RSD_SAMPLERATE, &rate);
@@ -92,12 +91,15 @@ static void *rs_init(const char *device, unsigned rate, unsigned latency)
    if (rsd_start(rd) < 0)
    {
       free(rsd);
-      rsd_free(rd);
-      return NULL;
+      goto error;
    }
 
    rsd->rd = rd;
    return rsd;
+
+error:
+   rsd_free(rd);
+   return NULL;
 }
 
 static ssize_t rs_write(void *data, const void *buf, size_t size)
@@ -175,7 +177,7 @@ static bool rs_alive(void *data)
    return false;
 }
 
-static bool rs_start(void *data)
+static bool rs_start(void *data, bool is_shutdown)
 {
    rsd_t *rsd = (rsd_t*)data;
    if (rsd_start(rsd->rd) < 0)
@@ -201,12 +203,13 @@ static void rs_free(void *data)
 
 static size_t rs_write_avail(void *data)
 {
+   size_t val;
    rsd_t *rsd = (rsd_t*)data;
 
    if (rsd->has_error)
       return 0;
    rsd_callback_lock(rsd->rd);
-   size_t val = fifo_write_avail(rsd->buffer);
+   val = fifo_write_avail(rsd->buffer);
    rsd_callback_unlock(rsd->rd);
    return val;
 }

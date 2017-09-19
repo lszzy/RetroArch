@@ -1,5 +1,6 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2014-2015 - Ali Bouhlel
+ *  Copyright (C) 2014-2017 - Ali Bouhlel
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -18,11 +19,13 @@
 
 #include <boolean.h>
 #include <libretro.h>
+#include <retro_miscellaneous.h>
 
-#include "../../driver.h"
-#include "../../general.h"
-#include "../input_config.h"
-#include "../input_joypad_driver.h"
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
+
+#include "../input_driver.h"
 
 #define MAX_PADS 1
 
@@ -42,7 +45,9 @@ static void ctr_input_poll(void *data)
       ctr->joypad->poll();
 }
 
-static int16_t ctr_input_state(void *data, const struct retro_keybind **binds,
+static int16_t ctr_input_state(void *data, 
+      rarch_joypad_info_t joypad_info,
+      const struct retro_keybind **binds,
       unsigned port, unsigned device,
       unsigned idx, unsigned id)
 {
@@ -54,9 +59,11 @@ static int16_t ctr_input_state(void *data, const struct retro_keybind **binds,
    switch (device)
    {
       case RETRO_DEVICE_JOYPAD:
-         return input_joypad_pressed(ctr->joypad, port, binds[port], id);
+         return input_joypad_pressed(ctr->joypad, joypad_info, port, binds[port], id);
       case RETRO_DEVICE_ANALOG:
-         return input_joypad_analog(ctr->joypad, port, idx, id, binds[port]);
+         if (binds[port])
+            return input_joypad_analog(ctr->joypad, joypad_info, port, idx, id, binds[port]);
+         break;
    }
 
    return 0;
@@ -72,27 +79,15 @@ static void ctr_input_free_input(void *data)
    free(data);
 }
 
-static void* ctr_input_initialize(void)
+static void* ctr_input_init(const char *joypad_driver)
 {
-   settings_t *settings = config_get_ptr();
    ctr_input_t *ctr = (ctr_input_t*)calloc(1, sizeof(*ctr));
    if (!ctr)
       return NULL;
 
-   ctr->joypad = input_joypad_init_driver(settings->input.joypad_driver, ctr);
+   ctr->joypad = input_joypad_init_driver(joypad_driver, ctr);
 
    return ctr;
-}
-
-static bool ctr_input_key_pressed(void *data, int key)
-{
-   settings_t *settings = config_get_ptr();
-   ctr_input_t *ctr     = (ctr_input_t*)data;
-
-   if (input_joypad_pressed(ctr->joypad, 0, settings->input.binds[0], key))
-      return true;
-
-   return false;
 }
 
 static bool ctr_input_meta_key_pressed(void *data, int key)
@@ -152,10 +147,9 @@ static void ctr_input_keyboard_mapping_set_block(void *data, bool value)
 }
 
 input_driver_t input_ctr = {
-   ctr_input_initialize,
+   ctr_input_init,
    ctr_input_poll,
    ctr_input_state,
-   ctr_input_key_pressed,
    ctr_input_meta_key_pressed,
    ctr_input_free_input,
    NULL,

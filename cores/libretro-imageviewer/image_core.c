@@ -8,12 +8,13 @@
 #include <lists/dir_list.h>
 #include <file/file_path.h>
 #include <compat/strl.h>
+#include <retro_environment.h>
 
-#if 0
-#define HAVE_STB_IMAGE
+#if defined(HAVE_RPNG) || defined(HAVE_RJPEG) || defined(HAVE_RTGA) || defined(HAVE_RBMP)
+#define PREFER_NON_STB_IMAGE
 #endif
 
-#ifdef HAVE_STB_IMAGE
+#if defined(HAVE_STB_IMAGE) && !defined(PREFER_NON_STB_IMAGE)
 #define STB_IMAGE_IMPLEMENTATION
 
 #if 0
@@ -52,7 +53,7 @@ static retro_environment_t IMAGE_CORE_PREFIX(environ_cb);
 
 static bool      process_new_image;
 static uint32_t* image_buffer;
-#ifndef HAVE_STB_IMAGE
+#ifndef STB_IMAGE_IMPLEMENTATION
 static struct texture_image image_texture;
 #endif
 static int       image_width;
@@ -65,10 +66,33 @@ struct string_list *file_list;
 #define DUPE_TEST
 #endif
 
-#ifdef HAVE_STB_IMAGE
+#ifdef STB_IMAGE_IMPLEMENTATION
 static const char* IMAGE_CORE_PREFIX(valid_extensions) = "jpg|jpeg|png|bmp|psd|tga|gif|hdr|pic|ppm|pgm";
 #else
-static const char* IMAGE_CORE_PREFIX(valid_extensions) = "jpg|jpeg|png|bmp|tga";
+
+static const char* IMAGE_CORE_PREFIX(valid_extensions) = 1+ /* to remove the first |, the alternative is 25 extra lines of ifdef/etc */
+
+#ifdef HAVE_RJPEG
+"|jpg|jpeg"
+#endif
+
+#ifdef HAVE_RPNG
+"|png"
+#endif
+
+#ifdef HAVE_RBMP
+"|bmp"
+#endif
+
+#ifdef HAVE_RTGA
+"|tga"
+#endif
+
+#if !defined(HAVE_RJPEG) && !defined(HAVE_RPNG) && !defined(HAVE_RBMP) && !defined(HAVE_RTGA)
+#error "can't build this core with no image formats"
+#endif
+;
+
 #endif
 
 void IMAGE_CORE_PREFIX(retro_get_system_info)(struct retro_system_info *info)
@@ -113,7 +137,7 @@ void IMAGE_CORE_PREFIX(retro_init)(void)
 
 static void imageviewer_free_image(void)
 {
-#ifdef HAVE_STB_IMAGE
+#ifdef STB_IMAGE_IMPLEMENTATION
    if (image_buffer)
       free(image_buffer);
 #else
@@ -201,12 +225,16 @@ void IMAGE_CORE_PREFIX(retro_cheat_set)(unsigned a, bool b, const char * c)
 
 static bool imageviewer_load(const char *path, int image_index)
 {
+#ifdef STB_IMAGE_IMPLEMENTATION
    int comp;
+#endif
+#ifdef RARCH_INTERNAL
+   extern bool video_driver_supports_rgba(void);
+#endif
 
    imageviewer_free_image();
 
-   (void)comp;
-#ifdef HAVE_STB_IMAGE
+#ifdef STB_IMAGE_IMPLEMENTATION
    image_buffer           = (uint32_t*)stbi_load(
          path,
          &image_width,
@@ -214,6 +242,9 @@ static bool imageviewer_load(const char *path, int image_index)
          &comp,
          4);
 #else
+#ifdef RARCH_INTERNAL
+   image_texture.supports_rgba = video_driver_supports_rgba();
+#endif
    if (!image_texture_load(&image_texture, path))
       return false;
    image_buffer = (uint32_t*)image_texture.pixels;
@@ -239,7 +270,7 @@ bool IMAGE_CORE_PREFIX(retro_load_game)(const struct retro_game_info *info)
    path_basedir(dir);
 
    file_list = dir_list_new(dir, IMAGE_CORE_PREFIX(valid_extensions),
-         false,false);
+         false,true,false,false);
    dir_list_sort(file_list, false);
    free(dir);
 
@@ -379,8 +410,8 @@ void IMAGE_CORE_PREFIX(retro_run)(void)
    }
    else if (last_image)
    {
-      image_index = file_list->size - 1;
-      load_image = true;
+      image_index = (int)(file_list->size - 1);
+      load_image  = true;
    }
 
    if (load_image)
@@ -396,7 +427,7 @@ void IMAGE_CORE_PREFIX(retro_run)(void)
       /* RGBA > XRGB8888 */
       struct retro_system_av_info info;
 
-#ifdef HAVE_STB_IMAGE
+#ifdef STB_IMAGE_IMPLEMENTATION
       int x, y;
       uint32_t *buf = &image_buffer[0];
 

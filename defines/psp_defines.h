@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -32,6 +32,8 @@
 #if defined(SN_TARGET_PSP2) || defined(VITA)
 
 #ifdef VITA
+int sceClibPrintf ( const char * format, ... );
+#define printf sceClibPrintf
 #define PSP_DISPLAY_PIXEL_FORMAT_8888 (SCE_DISPLAY_PIXELFORMAT_A8B8G8R8)
 #else
 #define PSP_DISPLAY_PIXEL_FORMAT_8888 (SCE_DISPLAY_PIXELFORMAT_A8B8G8R8)
@@ -79,8 +81,12 @@
 #define PSP_CTRL_SQUARE SCE_CTRL_SQUARE
 #define PSP_CTRL_CROSS SCE_CTRL_CROSS
 #define PSP_CTRL_CIRCLE SCE_CTRL_CIRCLE
-#define PSP_CTRL_L SCE_CTRL_LTRIGGER
-#define PSP_CTRL_R SCE_CTRL_RTRIGGER
+#define PSP_CTRL_L SCE_CTRL_L1
+#define PSP_CTRL_R SCE_CTRL_R1
+#define PSP_CTRL_L2 SCE_CTRL_LTRIGGER
+#define PSP_CTRL_R2 SCE_CTRL_RTRIGGER
+#define PSP_CTRL_L3 SCE_CTRL_L3
+#define PSP_CTRL_R3 SCE_CTRL_R3
 #else
 #define DEFAULT_SAMPLING_MODE (SCE_CTRL_MODE_DIGITALANALOG)
 
@@ -98,7 +104,13 @@
 #define PSP_CTRL_R SCE_CTRL_R
 #endif
 
+#if defined(VITA)
+#define CtrlSetSamplingMode(mode) sceCtrlSetSamplingModeExt(mode)
+#define CtrlPeekBufferPositive(port, pad_data, bufs) sceCtrlPeekBufferPositiveExt2(port, pad_data, bufs)
+#else
+#define CtrlSetSamplingMode(mode) sceCtrlSetSamplingMode(mode)
 #define CtrlPeekBufferPositive(port, pad_data, bufs) sceCtrlPeekBufferPositive(port, pad_data, bufs)
+#endif
 
 #elif defined(PSP)
 
@@ -113,6 +125,7 @@
 
 #define DEFAULT_SAMPLING_MODE (PSP_CTRL_MODE_ANALOG)
 
+#define CtrlSetSamplingMode(mode) sceCtrlSetSamplingMode(mode)
 #define CtrlPeekBufferPositive(port, pad_data, bufs) sceCtrlPeekBufferPositive(pad_data, bufs)
 #endif
 

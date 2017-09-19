@@ -1,4 +1,4 @@
-/* Copyright  (C) 2010-2016 The RetroArch team
+/* Copyright  (C) 2010-2017 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this file (utf.h).
@@ -28,6 +28,10 @@
 
 #include <boolean.h>
 
+#include <retro_common_api.h>
+
+RETRO_BEGIN_DECLS
+
 size_t utf8_conv_utf32(uint32_t *out, size_t out_chars,
       const char *in, size_t in_size);
 
@@ -39,5 +43,11 @@ size_t utf8len(const char *string);
 size_t utf8cpy(char *d, size_t d_len, const char *s, size_t chars);
 
 const char *utf8skip(const char *str, size_t chars);
+
+uint32_t utf8_walk(const char **string);
+
+bool utf16_to_char_string(const uint16_t *in, char *s, size_t len);
+
+RETRO_END_DECLS
 
 #endif

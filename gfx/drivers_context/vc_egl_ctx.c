@@ -1,5 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *  Copyright (C) 2012-2015 - Michael Lelli
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
@@ -24,11 +25,16 @@
 #include <VG/openvg.h>
 #include <bcm_host.h>
 
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
+
 #include <retro_inline.h>
 
-#include "../../driver.h"
-#include "../../runloop.h"
-#include "../video_context_driver.h"
+#include "../../configuration.h"
+#include "../video_driver.h"
+
+#include "../../frontend/frontend_driver.h"
 
 #ifdef HAVE_EGL
 #include "../common/egl_common.h"
@@ -52,6 +58,8 @@ typedef struct
 #ifdef HAVE_EGL
    egl_ctx_data_t egl;
 #endif
+   EGL_DISPMANX_WINDOW_T native_window;
+
    bool resize;
    unsigned fb_width, fb_height;
 
@@ -78,37 +86,15 @@ static INLINE bool gfx_ctx_vc_egl_query_extension(vc_ctx_data_t *vc, const char 
 }
 
 static void gfx_ctx_vc_check_window(void *data, bool *quit,
-      bool *resize, unsigned *width, unsigned *height, unsigned frame_count)
+      bool *resize, unsigned *width, unsigned *height,
+      bool is_shutdown)
 {
    (void)data;
-   (void)frame_count;
    (void)width;
    (void)height;
 
    *resize = false;
-   *quit   = g_egl_quit;
-}
-
-static bool gfx_ctx_vc_set_resize(void *data, unsigned width, unsigned height)
-{
-   (void)data;
-   (void)width;
-   (void)height;
-   return false;
-}
-
-static void gfx_ctx_vc_update_window_title(void *data)
-{
-   char buf[128]        = {0};
-   char buf_fps[128]    = {0};
-   settings_t *settings = config_get_ptr();
-
-   (void)data;
-
-   video_monitor_get_fps(buf, sizeof(buf),
-         buf_fps, sizeof(buf_fps));
-   if (settings->fps_show)
-      runloop_msg_queue_push(buf_fps, 1, 1, false);
+   *quit   = (bool)frontend_driver_get_signal_handler_state();
 }
 
 static void gfx_ctx_vc_get_video_size(void *data,
@@ -120,8 +106,8 @@ static void gfx_ctx_vc_get_video_size(void *data,
    /* Use dispmanx upscaling if 
     * fullscreen_x and fullscreen_y are set. */
 
-   if (settings->video.fullscreen_x != 0 &&
-      settings->video.fullscreen_y != 0)
+   if (settings->uints.video_fullscreen_x != 0 &&
+      settings->uints.video_fullscreen_y != 0)
    {
       /* Keep input and output aspect ratio equal.
        * There are other aspect ratio settings 
@@ -129,15 +115,17 @@ static void gfx_ctx_vc_get_video_size(void *data,
 
       /*  Calculate source and destination aspect ratios. */
 
-      float srcAspect = (float)settings->video.fullscreen_x / (float)settings->video.fullscreen_y;
+      float srcAspect = (float)settings->uints.video_fullscreen_x 
+         / (float)settings->uints.video_fullscreen_y;
       float dstAspect = (float)vc->fb_width / (float)vc->fb_height;
 
-      /* If source and destination aspect ratios are not equal correct source width. */
+      /* If source and destination aspect ratios 
+       * are not equal correct source width. */
       if (srcAspect != dstAspect)
-         *width = (unsigned)(settings->video.fullscreen_y * dstAspect);
+         *width = (unsigned)(settings->uints.video_fullscreen_y * dstAspect);
       else
-         *width = settings->video.fullscreen_x;
-      *height = settings->video.fullscreen_y;
+         *width = settings->uints.video_fullscreen_x;
+      *height   = settings->uints.video_fullscreen_y;
    }
    else
    {
@@ -148,11 +136,10 @@ static void gfx_ctx_vc_get_video_size(void *data,
 
 static void gfx_ctx_vc_destroy(void *data);
 
-static void *gfx_ctx_vc_init(void *video_driver)
+static void *gfx_ctx_vc_init(video_frame_info_t *video_info, void *video_driver)
 {
    VC_DISPMANX_ALPHA_T alpha;
    EGLint n, major, minor;
-   static EGL_DISPMANX_WINDOW_T nativewindow;
 
    DISPMANX_ELEMENT_HANDLE_T dispman_element;
    DISPMANX_DISPLAY_HANDLE_T dispman_display;
@@ -168,6 +155,7 @@ static void *gfx_ctx_vc_init(void *video_driver)
       EGL_GREEN_SIZE, 8,
       EGL_BLUE_SIZE, 8,
       EGL_ALPHA_SIZE, 8,
+      EGL_DEPTH_SIZE, 16,
       EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
       EGL_NONE
    };
@@ -195,14 +183,15 @@ static void *gfx_ctx_vc_init(void *video_driver)
    bcm_host_init();
 
 #ifdef HAVE_EGL
-   if (!egl_init_context(&vc->egl, EGL_DEFAULT_DISPLAY,
+   if (!egl_init_context(&vc->egl, EGL_NONE, EGL_DEFAULT_DISPLAY,
             &major, &minor, &n, attribute_list))
    {
       egl_report_error();
       goto error;
    }
 
-   if (!egl_create_context(&vc->egl, (vc_api == GFX_CTX_OPENGL_ES_API) ? context_attributes : NULL))
+   if (!egl_create_context(&vc->egl, (vc_api == GFX_CTX_OPENGL_ES_API) 
+            ? context_attributes : NULL))
    {
       egl_report_error();
       goto error;
@@ -223,21 +212,21 @@ static void *gfx_ctx_vc_init(void *video_driver)
 
    /* Use dispmanx upscaling if fullscreen_x 
     * and fullscreen_y are set. */
-   if (settings->video.fullscreen_x != 0 &&
-      settings->video.fullscreen_y != 0)
+   if (settings->uints.video_fullscreen_x != 0 &&
+      settings->uints.video_fullscreen_y != 0)
    {
       /* Keep input and output aspect ratio equal.
        * There are other aspect ratio settings which can be used to stretch video output. */
 
       /* Calculate source and destination aspect ratios. */
-      float srcAspect = (float)settings->video.fullscreen_x / (float)settings->video.fullscreen_y;
+      float srcAspect = (float)settings->uints.video_fullscreen_x / (float)settings->uints.video_fullscreen_y;
       float dstAspect = (float)vc->fb_width / (float)vc->fb_height;
       /* If source and destination aspect ratios are not equal correct source width. */
       if (srcAspect != dstAspect)
-         src_rect.width = (unsigned)(settings->video.fullscreen_y * dstAspect) << 16;
+         src_rect.width = (unsigned)(settings->uints.video_fullscreen_y * dstAspect) << 16;
       else
-         src_rect.width = settings->video.fullscreen_x << 16;
-      src_rect.height = settings->video.fullscreen_y << 16;
+         src_rect.width = settings->uints.video_fullscreen_x << 16;
+      src_rect.height   = settings->uints.video_fullscreen_y << 16;
    }
    else
    {
@@ -257,37 +246,38 @@ static void *gfx_ctx_vc_init(void *video_driver)
       0 /*layer*/, &dst_rect, 0 /*src*/,
       &src_rect, DISPMANX_PROTECTION_NONE, &alpha, 0 /*clamp*/, DISPMANX_NO_ROTATE);
 
-   nativewindow.element = dispman_element;
+   vc->native_window.element = dispman_element;
 
    /* Use dispmanx upscaling if fullscreen_x and fullscreen_y are set. */
 
-   if (settings->video.fullscreen_x != 0 &&
-      settings->video.fullscreen_y != 0)
+   if (settings->uints.video_fullscreen_x != 0 &&
+       settings->uints.video_fullscreen_y != 0)
    {
       /* Keep input and output aspect ratio equal.
        * There are other aspect ratio settings which 
        * can be used to stretch video output. */
 
       /* Calculate source and destination aspect ratios. */
-      float srcAspect = (float)settings->video.fullscreen_x / (float)settings->video.fullscreen_y;
+      float srcAspect = (float)settings->uints.video_fullscreen_x 
+         / (float)settings->uints.video_fullscreen_y;
       float dstAspect = (float)vc->fb_width / (float)vc->fb_height;
 
       /* If source and destination aspect ratios are not equal correct source width. */
       if (srcAspect != dstAspect)
-         nativewindow.width = (unsigned)(settings->video.fullscreen_y * dstAspect);
+         vc->native_window.width = (unsigned)(settings->uints.video_fullscreen_y * dstAspect);
       else
-         nativewindow.width = settings->video.fullscreen_x;
-      nativewindow.height = settings->video.fullscreen_y;
+         vc->native_window.width = settings->uints.video_fullscreen_x;
+      vc->native_window.height   = settings->uints.video_fullscreen_y;
    }
    else
    {
-      nativewindow.width = vc->fb_width;
-      nativewindow.height = vc->fb_height;
+      vc->native_window.width = vc->fb_width;
+      vc->native_window.height = vc->fb_height;
    }
    vc_dispmanx_update_submit_sync(dispman_update);
 
 #ifdef HAVE_EGL
-   if (!egl_create_surface(&vc->egl, &nativewindow))
+   if (!egl_create_surface(&vc->egl, &vc->native_window))
       goto error;
 #endif
 
@@ -308,6 +298,7 @@ static void gfx_ctx_vc_set_swap_interval(void *data, unsigned swap_interval)
 }
 
 static bool gfx_ctx_vc_set_video_mode(void *data,
+      video_frame_info_t *video_info,
       unsigned width, unsigned height,
       bool fullscreen)
 {
@@ -317,7 +308,7 @@ static bool gfx_ctx_vc_set_video_mode(void *data,
    if (g_egl_inited)
       return false;
 
-   egl_install_sighandlers();
+   frontend_driver_install_signal_handler();
    gfx_ctx_vc_set_swap_interval(&vc->egl, vc->egl.interval);
 
    g_egl_inited = true;
@@ -439,10 +430,10 @@ static void gfx_ctx_vc_destroy(void *data)
 }
 
 static void gfx_ctx_vc_input_driver(void *data,
+      const char *name,
       const input_driver_t **input, void **input_data)
 {
-   (void)data;
-   *input = NULL;
+   *input      = NULL;
    *input_data = NULL;
 }
 
@@ -456,12 +447,6 @@ static bool gfx_ctx_vc_suppress_screensaver(void *data, bool enable)
 {
    (void)data;
    (void)enable;
-   return false;
-}
-
-static bool gfx_ctx_vc_has_windowed(void *data)
-{
-   (void)data;
    return false;
 }
 
@@ -596,7 +581,7 @@ error:
    return false;
 }
 
-static void gfx_ctx_vc_swap_buffers(void *data)
+static void gfx_ctx_vc_swap_buffers(void *data, void *data2)
 {
    vc_ctx_data_t *vc = (vc_ctx_data_t*)data;
 
@@ -647,12 +632,12 @@ const gfx_ctx_driver_t gfx_ctx_videocore = {
    NULL, /* get_video_output_next */
    NULL, /* get_metrics */
    gfx_ctx_vc_translate_aspect,
-   gfx_ctx_vc_update_window_title,
+   NULL, /* update_title */
    gfx_ctx_vc_check_window,
-   gfx_ctx_vc_set_resize,
+   NULL, /* set_resize */
    gfx_ctx_vc_has_focus,
    gfx_ctx_vc_suppress_screensaver,
-   gfx_ctx_vc_has_windowed,
+   NULL, /* has_windowed */
    gfx_ctx_vc_swap_buffers,
    gfx_ctx_vc_input_driver,
    gfx_ctx_vc_get_proc_address,
@@ -662,5 +647,8 @@ const gfx_ctx_driver_t gfx_ctx_videocore = {
    "videocore",
    gfx_ctx_vc_get_flags,
    gfx_ctx_vc_set_flags,
-   gfx_ctx_vc_bind_hw_render
+   gfx_ctx_vc_bind_hw_render,
+   NULL,
+   NULL
+
 };

@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2016 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2015 - Daniel De Matteis
+ *  Copyright (C) 2016-2017 - Hans-Kristian Arntzen
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -16,13 +16,15 @@
 
 #include <retro_miscellaneous.h>
 
-#include "../../config.def.h"
-#include "../../gfx/font_driver.h"
-#include "../../gfx/video_context_driver.h"
-#include "../../gfx/common/vulkan_common.h"
-#include "../../gfx/video_shader_driver.h"
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
 
-#include "../menu_display.h"
+#include "../menu_driver.h"
+
+#include "../../gfx/font_driver.h"
+#include "../../gfx/video_driver.h"
+#include "../../gfx/common/vulkan_common.h"
 
 /* Will do Y-flip later, but try to make it similar to GL. */
 static const float vk_vertexes[] = {
@@ -39,6 +41,13 @@ static const float vk_tex_coords[] = {
    1, 0
 };
 
+static const float vk_colors[] = {
+   1.0f, 1.0f, 1.0f, 1.0f,
+   1.0f, 1.0f, 1.0f, 1.0f,
+   1.0f, 1.0f, 1.0f, 1.0f,
+   1.0f, 1.0f, 1.0f, 1.0f,
+};
+
 static void *menu_display_vk_get_default_mvp(void)
 {
    vk_t *vk = (vk_t*)video_driver_get_ptr(false);
@@ -52,6 +61,11 @@ static const float *menu_display_vk_get_default_vertices(void)
    return &vk_vertexes[0];
 }
 
+static const float *menu_display_vk_get_default_color(void)
+{
+   return &vk_colors[0];
+}
+
 static const float *menu_display_vk_get_default_tex_coords(void)
 {
    return &vk_tex_coords[0];
@@ -63,6 +77,7 @@ static unsigned to_display_pipeline(
    return ((type == MENU_DISPLAY_PRIM_TRIANGLESTRIP) << 1) | (blend << 0);
 }
 
+#ifdef HAVE_SHADERPIPELINE
 static unsigned to_menu_pipeline(
       enum menu_display_prim_type type, unsigned pipeline)
 {
@@ -70,12 +85,19 @@ static unsigned to_menu_pipeline(
    {
       case VIDEO_SHADER_MENU:
          return 4 + (type == MENU_DISPLAY_PRIM_TRIANGLESTRIP);
-      case VIDEO_SHADER_MENU_SEC:
+      case VIDEO_SHADER_MENU_2:
          return 6 + (type == MENU_DISPLAY_PRIM_TRIANGLESTRIP);
+      case VIDEO_SHADER_MENU_3:
+         return 8 + (type == MENU_DISPLAY_PRIM_TRIANGLESTRIP);
+      case VIDEO_SHADER_MENU_4:
+         return 10 + (type == MENU_DISPLAY_PRIM_TRIANGLESTRIP);
+      case VIDEO_SHADER_MENU_5:
+         return 12 + (type == MENU_DISPLAY_PRIM_TRIANGLESTRIP);
       default:
          return 0;
    }
 }
+#endif
 
 static void menu_display_vk_viewport(void *data)
 {
@@ -96,20 +118,56 @@ static void menu_display_vk_viewport(void *data)
 static void menu_display_vk_draw_pipeline(void *data)
 {
 #ifdef HAVE_SHADERPIPELINE
+   float output_size[2];
    menu_display_ctx_draw_t *draw = (menu_display_ctx_draw_t*)data;
    vk_t *vk                      = (vk_t*)video_driver_get_ptr(false);
-   video_coord_array_t *ca         = NULL;
+   video_coord_array_t *ca       = NULL;
+
+   static uint8_t ubo_scratch_data[768];
    static float t                = 0.0f;
+   static struct video_coords blank_coords;
 
    if (!vk || !draw)
       return;
 
-   ca = menu_display_get_coords_array();
-   draw->x                     = 0;
-   draw->y                     = 0;
-   draw->coords                = (struct video_coords*)&ca->coords;
-   draw->matrix_data           = NULL;
-   draw->pipeline.backend_data = &t;
+   draw->x                          = 0;
+   draw->y                          = 0;
+   draw->matrix_data                = NULL;
+
+   output_size[0]                   = (float)vk->context->swapchain_width;
+   output_size[1]                   = (float)vk->context->swapchain_height;
+
+   switch (draw->pipeline.id)
+   {
+      /* Ribbon */
+      default:
+      case VIDEO_SHADER_MENU:
+      case VIDEO_SHADER_MENU_2:
+         ca = menu_display_get_coords_array();
+         draw->coords                     = (struct video_coords*)&ca->coords;
+         draw->pipeline.backend_data      = ubo_scratch_data;
+         draw->pipeline.backend_data_size = sizeof(float);
+
+         /* Match UBO layout in shader. */
+         memcpy(ubo_scratch_data, &t, sizeof(t));
+         break;
+
+      /* Snow simple */
+      case VIDEO_SHADER_MENU_3:
+      case VIDEO_SHADER_MENU_4:
+      case VIDEO_SHADER_MENU_5:
+         draw->pipeline.backend_data      = ubo_scratch_data;
+         draw->pipeline.backend_data_size = sizeof(math_matrix_4x4) + 3 * sizeof(float);
+
+         /* Match UBO layout in shader. */
+         memcpy(ubo_scratch_data, menu_display_vk_get_default_mvp(), sizeof(math_matrix_4x4));
+         memcpy(ubo_scratch_data + sizeof(math_matrix_4x4), output_size, sizeof(output_size));
+         memcpy(ubo_scratch_data + sizeof(math_matrix_4x4) + 2 * sizeof(float), &t, sizeof(t));
+         draw->coords = &blank_coords;
+         blank_coords.vertices = 4;
+         draw->prim_type = MENU_DISPLAY_PRIM_TRIANGLESTRIP;
+         break;
+   }
 
    t += 0.01;
 #endif
@@ -143,6 +201,8 @@ static void menu_display_vk_draw(void *data)
       draw->coords->lut_tex_coord = menu_display_vk_get_default_tex_coords();
    if (!texture)
       texture         = &vk->display.blank_texture;
+   if (!color)
+      color           = menu_display_vk_get_default_color();
 
    menu_display_vk_viewport(draw);
    vk->tracker.dirty |= VULKAN_DIRTY_DYNAMIC_BIT;
@@ -157,7 +217,8 @@ static void menu_display_vk_draw(void *data)
    for (i = 0; i < draw->coords->vertices; i++, pv++)
    {
       pv->x       = *vertex++;
-      pv->y       = 1.0f - (*vertex++); /* Y-flip. Vulkan is top-left clip space */
+      /* Y-flip. Vulkan is top-left clip space */
+      pv->y       = 1.0f - (*vertex++); 
       pv->tex_x   = *tex_coord++;
       pv->tex_y   = *tex_coord++;
       pv->color.r = *color++;
@@ -170,37 +231,46 @@ static void menu_display_vk_draw(void *data)
    {
 #ifdef HAVE_SHADERPIPELINE
       case VIDEO_SHADER_MENU:
-      case VIDEO_SHADER_MENU_SEC:
+      case VIDEO_SHADER_MENU_2:
+      case VIDEO_SHADER_MENU_3:
+      case VIDEO_SHADER_MENU_4:
+      case VIDEO_SHADER_MENU_5:
       {
-         const struct vk_draw_triangles call = {
-            vk->display.pipelines[
-               to_menu_pipeline(draw->prim_type, draw->pipeline.id)],
-               NULL,
-               VK_NULL_HANDLE,
-               draw->pipeline.backend_data,
-               sizeof(float),
-               &range,
-               draw->coords->vertices,
-         };
+         struct vk_draw_triangles call;
+
+         call.pipeline     = vk->display.pipelines[
+               to_menu_pipeline(draw->prim_type, draw->pipeline.id)];
+         call.texture      = NULL;
+         call.sampler      = VK_NULL_HANDLE;
+         call.uniform      = draw->pipeline.backend_data;
+         call.uniform_size = draw->pipeline.backend_data_size;
+         call.vbo          = &range;
+         call.vertices     = draw->coords->vertices;
+
          vulkan_draw_triangles(vk, &call);
          break;
       }
+
+         break;
 #endif
 
       default:
       {
-         const struct vk_draw_triangles call = {
-            vk->display.pipelines[
-               to_display_pipeline(draw->prim_type, vk->display.blend)],
-               texture,
-               texture->default_smooth 
-                  ? vk->samplers.linear : vk->samplers.nearest,
-               draw->matrix_data
-                  ? draw->matrix_data : menu_display_vk_get_default_mvp(),
-               sizeof(math_matrix_4x4),
-               &range,
-               draw->coords->vertices,
-         };
+         struct vk_draw_triangles call;
+         
+         call.pipeline     = vk->display.pipelines[
+               to_display_pipeline(draw->prim_type, vk->display.blend)];
+         call.texture      = texture;
+         call.sampler      = texture->mipmap ?
+            vk->samplers.mipmap_linear :
+            (texture->default_smooth ? vk->samplers.linear 
+             : vk->samplers.nearest);
+         call.uniform      = draw->matrix_data
+            ? draw->matrix_data : menu_display_vk_get_default_mvp();
+         call.uniform_size = sizeof(math_matrix_4x4);
+         call.vbo          = &range;
+         call.vertices     = draw->coords->vertices;
+
          vulkan_draw_triangles(vk, &call);
          break;
       }
@@ -211,7 +281,8 @@ static void menu_display_vk_restore_clear_color(void)
 {
 }
 
-static void menu_display_vk_clear_color(menu_display_ctx_clearcolor_t *clearcolor)
+static void menu_display_vk_clear_color(
+      menu_display_ctx_clearcolor_t *clearcolor)
 {
    VkClearRect rect;
    VkClearAttachment attachment;
@@ -220,13 +291,14 @@ static void menu_display_vk_clear_color(menu_display_ctx_clearcolor_t *clearcolo
       return;
 
    memset(&attachment, 0, sizeof(attachment));
+   memset(&rect, 0, sizeof(rect));
+
    attachment.aspectMask                  = VK_IMAGE_ASPECT_COLOR_BIT;
    attachment.clearValue.color.float32[0] = clearcolor->r;
    attachment.clearValue.color.float32[1] = clearcolor->g;
    attachment.clearValue.color.float32[2] = clearcolor->b;
    attachment.clearValue.color.float32[3] = clearcolor->a;
 
-   memset(&rect, 0, sizeof(rect));
    rect.rect.extent.width  = vk->context->swapchain_width;
    rect.rect.extent.height = vk->context->swapchain_height;
    rect.layerCount         = 1;
@@ -248,10 +320,15 @@ static void menu_display_vk_blend_end(void)
 
 static bool menu_display_vk_font_init_first(
       void **font_handle, void *video_data, const char *font_path,
-      float font_size)
+      float font_size, bool is_threaded)
 {
-   return font_driver_init_first(NULL, font_handle, video_data,
-         font_path, font_size, true, FONT_DRIVER_RENDER_VULKAN_API);
+   font_data_t **handle = (font_data_t**)font_handle;
+   *handle = font_driver_init_first(video_data,
+         font_path, font_size, true,
+         is_threaded,
+         FONT_DRIVER_RENDER_VULKAN_API);
+
+   return *handle;
 }
 
 menu_display_ctx_driver_t menu_display_ctx_vulkan = {

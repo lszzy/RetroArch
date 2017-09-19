@@ -1,5 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2015 - Michael Lelli
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -18,7 +19,6 @@
 #include <boolean.h>
 
 #include "../audio_driver.h"
-#include "../../configuration.h"
 
 /* forward declarations */
 unsigned RWebAudioSampleRate(void);
@@ -37,16 +37,17 @@ static void rwebaudio_free(void *data)
    RWebAudioFree();
 }
 
-static void *rwebaudio_init(const char *device, unsigned rate, unsigned latency)
+static void *rwebaudio_init(const char *device, unsigned rate, unsigned latency,
+      unsigned block_frames,
+      unsigned *new_rate)
 {
-   settings_t *settings = config_get_ptr();
    void *data           = RWebAudioInit(latency);
 
    (void)device;
    (void)rate;
 
    if (data)
-      settings->audio.out_rate = RWebAudioSampleRate();
+      *new_rate         = RWebAudioSampleRate();
    return data;
 }
 
@@ -75,17 +76,11 @@ static bool rwebaudio_alive(void *data)
    return !rwebaudio_is_paused;
 }
 
-static bool rwebaudio_start(void *data)
+static bool rwebaudio_start(void *data, bool is_shutdown)
 {
    (void)data;
    rwebaudio_is_paused = false;
    return RWebAudioStart();
-}
-
-static bool rwebaudio_use_float(void *data)
-{
-   (void)data;
-   return true;
 }
 
 static size_t rwebaudio_write_avail(void *data)
@@ -98,6 +93,12 @@ static size_t rwebaudio_buffer_size(void *data)
 {
    (void)data;
    return RWebAudioBufferSize();
+}
+
+   static bool rwebaudio_use_float(void *data)
+{
+   (void)data;
+   return true;
 }
 
 audio_driver_t audio_rwebaudio = {

@@ -1,5 +1,5 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -19,10 +19,9 @@
 #include <stdint.h>
 
 #include <boolean.h>
+#include <retro_miscellaneous.h>
 #include <retro_common_api.h>
 #include <lists/file_list.h>
-
-#include "../msg_hash.h"
 
 #ifndef COLLECTION_SIZE
 #define COLLECTION_SIZE 99999
@@ -44,7 +43,9 @@ enum menu_displaylist_parse_type
    PARSE_ONLY_STRING         = (1 << 9),
    PARSE_ONLY_PATH           = (1 << 10),
    PARSE_ONLY_STRING_OPTIONS = (1 << 11),
-   PARSE_SUB_GROUP           = (1 << 12) 
+   PARSE_ONLY_HEX            = (1 << 12),
+   PARSE_ONLY_DIR            = (1 << 13),
+   PARSE_SUB_GROUP           = (1 << 14) 
 };
 
 enum menu_displaylist_ctl_state
@@ -56,13 +57,22 @@ enum menu_displaylist_ctl_state
    DISPLAYLIST_MAIN_MENU,
    DISPLAYLIST_GENERIC,
    DISPLAYLIST_SETTING_ENUM,
-   DISPLAYLIST_SETTINGS,
    DISPLAYLIST_SETTINGS_ALL,
    DISPLAYLIST_HORIZONTAL,
    DISPLAYLIST_HORIZONTAL_CONTENT_ACTIONS,
    DISPLAYLIST_HISTORY,
+   DISPLAYLIST_FAVORITES,
+   DISPLAYLIST_VIDEO_HISTORY,
+   DISPLAYLIST_MUSIC_HISTORY,
+   DISPLAYLIST_IMAGES_HISTORY,
+   DISPLAYLIST_MUSIC_LIST,
    DISPLAYLIST_PLAYLIST_COLLECTION,
    DISPLAYLIST_DEFAULT,
+   DISPLAYLIST_FILE_BROWSER_SELECT_DIR,
+   DISPLAYLIST_FILE_BROWSER_SCAN_DIR,
+   DISPLAYLIST_FILE_BROWSER_SELECT_FILE,
+   DISPLAYLIST_FILE_BROWSER_SELECT_CORE,
+   DISPLAYLIST_FILE_BROWSER_SELECT_COLLECTION,
    DISPLAYLIST_CORES,
    DISPLAYLIST_CORES_SUPPORTED,
    DISPLAYLIST_CORES_COLLECTION_SUPPORTED,
@@ -96,19 +106,44 @@ enum menu_displaylist_ctl_state
    DISPLAYLIST_SHADER_PARAMETERS_PRESET,
    DISPLAYLIST_NETWORK_INFO,
    DISPLAYLIST_SYSTEM_INFO,
-   DISPLAYLIST_DEBUG_INFO,
    DISPLAYLIST_ACHIEVEMENT_LIST,
+   DISPLAYLIST_ACHIEVEMENT_LIST_HARDCORE,
    DISPLAYLIST_USER_BINDS_LIST,
    DISPLAYLIST_ACCOUNTS_LIST,
    DISPLAYLIST_DRIVER_SETTINGS_LIST,
    DISPLAYLIST_VIDEO_SETTINGS_LIST,
+   DISPLAYLIST_CONFIGURATION_SETTINGS_LIST,
+   DISPLAYLIST_SAVING_SETTINGS_LIST,
+   DISPLAYLIST_LOGGING_SETTINGS_LIST,
+   DISPLAYLIST_FRAME_THROTTLE_SETTINGS_LIST,
+   DISPLAYLIST_REWIND_SETTINGS_LIST,
    DISPLAYLIST_AUDIO_SETTINGS_LIST,
    DISPLAYLIST_CORE_SETTINGS_LIST,
    DISPLAYLIST_INPUT_SETTINGS_LIST,
    DISPLAYLIST_INPUT_HOTKEY_BINDS_LIST,
+   DISPLAYLIST_ONSCREEN_OVERLAY_SETTINGS_LIST,
+   DISPLAYLIST_ONSCREEN_DISPLAY_SETTINGS_LIST,
+   DISPLAYLIST_ONSCREEN_NOTIFICATIONS_SETTINGS_LIST,
+   DISPLAYLIST_MENU_FILE_BROWSER_SETTINGS_LIST,
+   DISPLAYLIST_MENU_VIEWS_SETTINGS_LIST,
+   DISPLAYLIST_MENU_SETTINGS_LIST,
+   DISPLAYLIST_USER_INTERFACE_SETTINGS_LIST,
+   DISPLAYLIST_RETRO_ACHIEVEMENTS_SETTINGS_LIST,
+   DISPLAYLIST_UPDATER_SETTINGS_LIST,
+   DISPLAYLIST_WIFI_SETTINGS_LIST,
+   DISPLAYLIST_NETWORK_SETTINGS_LIST,
+   DISPLAYLIST_NETPLAY_LAN_SCAN_SETTINGS_LIST,
+   DISPLAYLIST_LAKKA_SERVICES_LIST,
+   DISPLAYLIST_USER_SETTINGS_LIST,
+   DISPLAYLIST_DIRECTORY_SETTINGS_LIST,
+   DISPLAYLIST_PRIVACY_SETTINGS_LIST,
+   DISPLAYLIST_RECORDING_SETTINGS_LIST,
    DISPLAYLIST_PLAYLIST_SETTINGS_LIST,
    DISPLAYLIST_ACCOUNTS_CHEEVOS_LIST,
+   DISPLAYLIST_BROWSE_URL_LIST,
+   DISPLAYLIST_BROWSE_URL_START,
    DISPLAYLIST_LOAD_CONTENT_LIST,
+   DISPLAYLIST_LOAD_CONTENT_SPECIAL,
    DISPLAYLIST_INFORMATION_LIST,
    DISPLAYLIST_CONTENT_SETTINGS,
    DISPLAYLIST_OPTIONS,
@@ -117,49 +152,61 @@ enum menu_displaylist_ctl_state
    DISPLAYLIST_OPTIONS_MANAGEMENT,
    DISPLAYLIST_OPTIONS_DISK,
    DISPLAYLIST_OPTIONS_SHADERS,
+   DISPLAYLIST_NETPLAY,
    DISPLAYLIST_ADD_CONTENT_LIST,
+   DISPLAYLIST_CONFIGURATIONS_LIST,
    DISPLAYLIST_SCAN_DIRECTORY_LIST,
+   DISPLAYLIST_NETPLAY_ROOM_LIST,
    DISPLAYLIST_ARCHIVE_ACTION,
    DISPLAYLIST_ARCHIVE_ACTION_DETECT_CORE,
    DISPLAYLIST_CORE_CONTENT,
    DISPLAYLIST_CORE_CONTENT_DIRS,
-   DISPLAYLIST_PROCESS,
-   DISPLAYLIST_PUSH_ONTO_STACK,
+   DISPLAYLIST_CORE_CONTENT_DIRS_SUBDIR,
    DISPLAYLIST_PENDING_CLEAR
 };
 
 typedef struct menu_displaylist_info
 {
+   enum msg_hash_enums enum_idx;
+   /* should the displaylist be sorted by alphabet? */
    bool need_sort;
    bool need_refresh;
    bool need_entries_refresh;
    bool need_push;
+   /* should we clear the displaylist before we push
+    * entries onto it? */
    bool need_clear;
+   bool push_builtin_cores;
+   /* Should a 'download core' entry be pushed onto the list?
+    * This will be set to true in case there are no currently
+    * installed cores. */
+   bool download_core;
+   /* does the navigation index need to be cleared to 0 (first entry) ? */
    bool need_navigation_clear;
-   file_list_t *list;
-   file_list_t *menu_list;
+
    char path[PATH_MAX_LENGTH];
    char path_b[PATH_MAX_LENGTH];
    char path_c[PATH_MAX_LENGTH];
-   char label[PATH_MAX_LENGTH];
-   uint32_t label_hash;
    char exts[PATH_MAX_LENGTH];
+   char label[255];
    unsigned type;
    unsigned type_default;
-   size_t directory_ptr;
    unsigned flags;
-   enum msg_hash_enums enum_idx;
+   uint32_t label_hash;
+   size_t directory_ptr;
+   file_list_t *list;
+   file_list_t *menu_list;
    rarch_setting_t *setting;
 } menu_displaylist_info_t;
 
 typedef struct menu_displaylist_ctx_parse_entry
 {
-   void *data;
-   menu_displaylist_info_t *info;
-   const char *info_label;
    enum msg_hash_enums enum_idx;
    enum menu_displaylist_parse_type parse_type;
    bool add_empty_entry;
+   const char *info_label;
+   void *data;
+   menu_displaylist_info_t *info;
 } menu_displaylist_ctx_parse_entry_t;
 
 typedef struct menu_displaylist_ctx_entry
@@ -168,8 +215,18 @@ typedef struct menu_displaylist_ctx_entry
    file_list_t *list;
 } menu_displaylist_ctx_entry_t;
 
-bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type, void *data);
+bool menu_displaylist_process(menu_displaylist_info_t *info);
 
+bool menu_displaylist_push(menu_displaylist_ctx_entry_t *entry);
+
+void menu_displaylist_info_free(menu_displaylist_info_t *info);
+
+void menu_displaylist_info_init(menu_displaylist_info_t *info);
+
+bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type, void *data);
+#ifdef HAVE_NETWORKING
+void netplay_refresh_rooms_menu(file_list_t *list);
+#endif
 RETRO_END_DECLS
 
 #endif

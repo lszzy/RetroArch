@@ -33,23 +33,14 @@
 #include <string/stdstring.h>
 
 #include "../audio_driver.h"
-#include "../../configuration.h"
 #include "../../verbosity.h"
-
-#if defined(__powerpc__) || defined(__ppc__) || defined(__POWERPC__)
-
-#ifndef OSX_PPC
-#define OSX_PPC
-#endif
-
-#endif
 
 typedef struct coreaudio
 {
    slock_t *lock;
    scond_t *cond;
 
-#ifdef OSX_PPC
+#if (defined(__MACH__) && (defined(__ppc__) || defined(__ppc64__)))
    ComponentInstance dev;
 #else
    AudioComponentInstance dev;
@@ -74,7 +65,7 @@ static void coreaudio_free(void *data)
    if (dev->dev_alive)
    {
       AudioOutputUnitStop(dev->dev);
-#ifdef OSX_PPC
+#if (defined(__MACH__) && (defined(__ppc__) || defined(__ppc64__)))
       CloseComponent(dev->dev);
 #else
       AudioComponentInstanceDispose(dev->dev);
@@ -95,21 +86,19 @@ static OSStatus audio_write_cb(void *userdata,
       const AudioTimeStamp *time_stamp, UInt32 bus_number,
       UInt32 number_frames, AudioBufferList *io_data)
 {
-   void *outbuf;
    unsigned write_avail;
+   void     *outbuf = NULL;
    coreaudio_t *dev = (coreaudio_t*)userdata;
 
    (void)time_stamp;
    (void)bus_number;
    (void)number_frames;
 
-   if (!io_data)
-      return noErr;
-   if (io_data->mNumberBuffers != 1)
+   if (!io_data || io_data->mNumberBuffers != 1)
       return noErr;
 
    write_avail = io_data->mBuffers[0].mDataByteSize;
-   outbuf = io_data->mBuffers[0].mData;
+   outbuf      = io_data->mBuffers[0].mData;
 
    slock_lock(dev->lock);
 
@@ -143,35 +132,41 @@ static void coreaudio_interrupt_listener(void *data, UInt32 interrupt_state)
 static void choose_output_device(coreaudio_t *dev, const char* device)
 {
    unsigned i;
-   AudioDeviceID *devices;
-   AudioObjectPropertyAddress propaddr =
-   { 
-      kAudioHardwarePropertyDevices, 
-      kAudioObjectPropertyScopeGlobal, 
-      kAudioObjectPropertyElementMaster 
-   };
+   UInt32 deviceCount;
+   AudioObjectPropertyAddress propaddr;
+   AudioDeviceID *devices              = NULL;
+   UInt32 size                         = 0;
 
-   UInt32 size = 0, deviceCount;
+   propaddr.mSelector = kAudioHardwarePropertyDevices;
+#if MAC_OS_X_VERSION_10_12
+   propaddr.mScope    = kAudioObjectPropertyScopeOutput;
+#else
+   propaddr.mScope    = kAudioObjectPropertyScopeGlobal;
+#endif
+   propaddr.mElement  = kAudioObjectPropertyElementMaster;
 
    if (AudioObjectGetPropertyDataSize(kAudioObjectSystemObject,
             &propaddr, 0, 0, &size) != noErr)
       return;
 
    deviceCount = size / sizeof(AudioDeviceID);
-   devices = (AudioDeviceID*)malloc(size);
+   devices     = (AudioDeviceID*)malloc(size);
 
    if (!devices || AudioObjectGetPropertyData(kAudioObjectSystemObject,
             &propaddr, 0, 0, &size, devices) != noErr)
       goto done;
 
-   propaddr.mScope = kAudioDevicePropertyScopeOutput;
+#if MAC_OS_X_VERSION_10_12
+#else
+   propaddr.mScope    = kAudioDevicePropertyScopeOutput;
+#endif
    propaddr.mSelector = kAudioDevicePropertyDeviceName;
-   size = 1024;
 
    for (i = 0; i < deviceCount; i ++)
    {
       char device_name[1024];
       device_name[0] = 0;
+      size           = 1024;
 
       if (AudioObjectGetPropertyData(devices[i],
                &propaddr, 0, 0, &size, device_name) == noErr 
@@ -189,12 +184,14 @@ done:
 #endif
 
 static void *coreaudio_init(const char *device,
-      unsigned rate, unsigned latency)
+      unsigned rate, unsigned latency,
+      unsigned block_frames,
+      unsigned *new_rate)
 {
    size_t fifo_size;
    UInt32 i_size;
    AudioStreamBasicDescription real_desc;
-#ifdef OSX_PPC
+#if (defined(__MACH__) && (defined(__ppc__) || defined(__ppc64__)))
    Component comp;
 #else
    AudioComponent comp;
@@ -206,20 +203,18 @@ static void *coreaudio_init(const char *device,
    AudioStreamBasicDescription stream_desc = {0};
    bool component_unavailable              = false;
    static bool session_initialized         = false;
-   coreaudio_t *dev                        = NULL;
-#ifdef OSX_PPC
+#if (defined(__MACH__) && (defined(__ppc__) || defined(__ppc64__)))
    ComponentDescription desc               = {0};
 #else
    AudioComponentDescription desc          = {0};
 #endif
-   settings_t *settings                    = config_get_ptr();
+   coreaudio_t *dev                        = (coreaudio_t*)
+      calloc(1, sizeof(*dev));
+   if (!dev)
+      return NULL;
 
    (void)session_initialized;
    (void)device;
-
-   dev = (coreaudio_t*)calloc(1, sizeof(*dev));
-   if (!dev)
-      return NULL;
 
    dev->lock = slock_new();
    dev->cond = scond_new();
@@ -242,7 +237,7 @@ static void *coreaudio_init(const char *device,
 #endif
    desc.componentManufacturer = kAudioUnitManufacturer_Apple;
 
-#ifdef OSX_PPC
+#if (defined(__MACH__) && (defined(__ppc__) || defined(__ppc64__)))
    comp = FindNextComponent(NULL, &desc);
 #else
    comp = AudioComponentFindNext(NULL, &desc);
@@ -250,7 +245,7 @@ static void *coreaudio_init(const char *device,
    if (comp == NULL)
       goto error;
    
-#ifdef OSX_PPC
+#if (defined(__MACH__) && (defined(__ppc__) || defined(__ppc64__)))
    component_unavailable = (OpenAComponent(comp, &dev->dev) != noErr);
 #else
    component_unavailable = (AudioComponentInstanceNew(comp, &dev->dev) != noErr);
@@ -264,7 +259,7 @@ static void *coreaudio_init(const char *device,
       choose_output_device(dev, device);
 #endif
 
-   dev->dev_alive = true;
+   dev->dev_alive                = true;
 
    /* Set audio format */
    stream_desc.mSampleRate       = rate;
@@ -299,7 +294,7 @@ static void *coreaudio_init(const char *device,
 
    RARCH_LOG("[CoreAudio]: Using output sample rate of %.1f Hz\n",
          (float)real_desc.mSampleRate);
-   settings->audio.out_rate = real_desc.mSampleRate;
+   *new_rate = real_desc.mSampleRate;
 
    /* Set channel layout (fails on iOS). */
 #ifndef TARGET_OS_IPHONE
@@ -320,11 +315,11 @@ static void *coreaudio_init(const char *device,
    if (AudioUnitInitialize(dev->dev) != noErr)
       goto error;
 
-   fifo_size = (latency * settings->audio.out_rate) / 1000;
-   fifo_size *= 2 * sizeof(float);
-   dev->buffer_size = fifo_size;
+   fifo_size         = (latency * (*new_rate)) / 1000;
+   fifo_size        *= 2 * sizeof(float);
+   dev->buffer_size  = fifo_size;
 
-   dev->buffer = fifo_new(fifo_size);
+   dev->buffer       = fifo_new(fifo_size);
    if (!dev->buffer)
       goto error;
 
@@ -344,9 +339,9 @@ error:
 
 static ssize_t coreaudio_write(void *data, const void *buf_, size_t size)
 {
-   coreaudio_t *dev = (coreaudio_t*)data;
+   coreaudio_t *dev   = (coreaudio_t*)data;
    const uint8_t *buf = (const uint8_t*)buf_;
-   size_t written = 0;
+   size_t written     = 0;
 
    while (!g_interrupted && size > 0)
    {
@@ -407,7 +402,7 @@ static bool coreaudio_stop(void *data)
    return dev->is_paused ? true : false;
 }
 
-static bool coreaudio_start(void *data)
+static bool coreaudio_start(void *data, bool is_shutdown)
 {
    coreaudio_t *dev = (coreaudio_t*)data;
    if (!dev)

@@ -1,7 +1,7 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2011-2016 - Daniel De Matteis
- *  Copyright (C) 2014-2015 - Jean-André Santoni
- *  Copyright (C) 2016      - Andrés Suárez
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
+ *  Copyright (C) 2014-2017 - Jean-André Santoni
+ *  Copyright (C) 2016-2017- Andrés Suárez
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -21,14 +21,9 @@
 #define _NK_MENU_H
 
 #include "nk_common.h"
-#include "../../menu_display.h"
-#include "../../menu_input.h"
 
-enum
-{
-   NK_TEXTURE_POINTER = 0,
-   NK_TEXTURE_LAST
-};
+#include "../../menu_driver.h"
+#include "../../menu_input.h"
 
 enum
 {
@@ -79,7 +74,7 @@ typedef struct nk_menu_handle
    struct
    {
       menu_texture_item bg;
-      menu_texture_item list[NK_TEXTURE_LAST];
+      menu_texture_item pointer;
    } textures;
 
    video_font_raster_block_t list_block;

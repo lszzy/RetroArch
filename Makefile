@@ -1,4 +1,5 @@
 HAVE_FILE_LOGGER=1
+HAVE_CC_RESAMPLER=1
 NEED_CXX_LINKER=0
 MISSING_DECLS   =0
 
@@ -16,13 +17,23 @@ ifeq ($(GLOBAL_CONFIG_DIR),)
    GLOBAL_CONFIG_DIR = /etc
 endif
 
-OBJ := 
+OBJ :=
 LIBS :=
 DEFINES := -DHAVE_CONFIG_H -DRARCH_INTERNAL -DHAVE_OVERLAY
 DEFINES += -DGLOBAL_CONFIG_DIR='"$(GLOBAL_CONFIG_DIR)"'
 
+ifneq ($(findstring BSD,$(OS)),)
+   CFLAGS += -DBSD
+   LDFLAGS += -L/usr/local/lib
+endif
+
+ifneq ($(findstring DOS,$(OS)),)
+   CFLAGS += -march=i386
+   LDFLAGS += -lemu
+endif
+
 ifneq ($(findstring Win32,$(OS)),)
-   LDFLAGS += -static-libgcc
+   LDFLAGS += -static-libgcc -lwinmm
 endif
 
 include Makefile.common
@@ -31,10 +42,16 @@ ifeq ($(shell $(CC) -v 2>&1 | grep -c "clang"),1)
    DEFINES +=  -Wno-invalid-source-encoding
 endif
 
+ifeq ($(shell $(CC) -v 2>&1 | grep -c "tcc"),1)
+   MD = -MD
+else
+   MD = -MMD
+endif
+
 HEADERS = $(wildcard */*/*.h) $(wildcard */*.h) $(wildcard *.h)
 
 ifeq ($(MISSING_DECLS), 1)
-	DEFINES += -Werror=missing-declarations
+   DEFINES += -Werror=missing-declarations
 endif
 
 ifeq ($(HAVE_DYLIB), 1)
@@ -55,9 +72,10 @@ ifeq ($(DEBUG), 1)
    OPTIMIZE_FLAG = -O0 -g
 else
    OPTIMIZE_FLAG = -O3 -ffast-math
-   ifneq ($(findstring Win32,$(OS)),)
-      LDFLAGS += -mwindows
-   endif
+endif
+
+ifneq ($(findstring Win32,$(OS)),)
+   LDFLAGS += -mwindows
 endif
 
 CFLAGS   += -Wall $(OPTIMIZE_FLAG) $(INCLUDE_DIRS) $(DEBUG_FLAG) -I.
@@ -69,12 +87,12 @@ OBJCFLAGS :=  $(CFLAGS) -D__STDC_CONSTANT_MACROS
 ifeq ($(CXX_BUILD), 1)
    LINK = $(CXX)
    CFLAGS   := $(CXXFLAGS) -xc++
-	CFLAGS   += -DCXX_BUILD
-	CXXFLAGS += -DCXX_BUILD
+   CFLAGS   += -DCXX_BUILD
+   CXXFLAGS += -DCXX_BUILD
 else
-	ifeq ($(NEED_CXX_LINKER),1)
-	   LINK = $(CXX)
-	else ifeq ($(findstring Win32,$(OS)),)
+   ifeq ($(NEED_CXX_LINKER),1)
+      LINK = $(CXX)
+   else ifeq ($(findstring Win32,$(OS)),)
       LINK = $(CC)
    else
       # directx-related code is c++
@@ -108,7 +126,7 @@ RARCH_OBJ := $(addprefix $(OBJDIR)/,$(OBJ))
 ifneq ($(SANITIZER),)
     CFLAGS   := -fsanitize=$(SANITIZER) $(CFLAGS)
     CXXFLAGS := -fsanitize=$(SANITIZER) $(CXXFLAGS)
-    LDFLAGS  := -fsanitize=$(SANITIZER) $(LDLAGS)
+    LDFLAGS  := -fsanitize=$(SANITIZER) $(LDFLAGS)
 endif
 
 ifneq ($(findstring $(GPERFTOOLS),profiler),)
@@ -120,10 +138,14 @@ endif
 
 all: $(TARGET) config.mk
 
+ifeq ($(MAKECMDGOALS),clean)
+config.mk:
+else
 -include $(RARCH_OBJ:.o=.d)
 config.mk: configure qb/*
 	@echo "config.mk is outdated or non-existing. Run ./configure again."
 	@exit 1
+endif
 
 retroarch: $(RARCH_OBJ)
 	@$(if $(Q), $(shell echo echo LD $@),)
@@ -132,12 +154,12 @@ retroarch: $(RARCH_OBJ)
 $(OBJDIR)/%.o: %.c config.h config.mk
 	@mkdir -p $(dir $@)
 	@$(if $(Q), $(shell echo echo CC $<),)
-	$(Q)$(CC) $(CFLAGS) $(DEFINES) -MMD -c -o $@ $<
+	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(DEFINES) $(MD) -c -o $@ $<
 
 $(OBJDIR)/%.o: %.cpp config.h config.mk
 	@mkdir -p $(dir $@)
 	@$(if $(Q), $(shell echo echo CXX $<),)
-	$(Q)$(CXX) $(CXXFLAGS) $(DEFINES) -MMD -c -o $@ $<
+	$(Q)$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEFINES) -MMD -c -o $@ $<
 
 $(OBJDIR)/%.o: %.m
 	@mkdir -p $(dir $@)
@@ -163,27 +185,43 @@ $(OBJDIR)/%.o: %.rc $(HEADERS)
 
 install: $(TARGET)
 	rm -f $(OBJDIR)/git_version.o
-	mkdir -p $(DESTDIR)$(PREFIX)/bin 2>/dev/null || /bin/true
+	mkdir -p $(DESTDIR)$(BIN_DIR) 2>/dev/null || /bin/true
 	mkdir -p $(DESTDIR)$(GLOBAL_CONFIG_DIR) 2>/dev/null || /bin/true
 	mkdir -p $(DESTDIR)$(PREFIX)/share/applications 2>/dev/null || /bin/true
 	mkdir -p $(DESTDIR)$(MAN_DIR)/man6 2>/dev/null || /bin/true
 	mkdir -p $(DESTDIR)$(PREFIX)/share/pixmaps 2>/dev/null || /bin/true
-	install -m755 $(TARGET) $(DESTDIR)$(PREFIX)/bin 
-	install -m755 tools/cg2glsl.py $(DESTDIR)$(PREFIX)/bin/retroarch-cg2glsl
+	install -m755 $(TARGET) $(DESTDIR)$(BIN_DIR)
+	install -m755 tools/cg2glsl.py $(DESTDIR)$(BIN_DIR)/retroarch-cg2glsl
 	install -m644 retroarch.cfg $(DESTDIR)$(GLOBAL_CONFIG_DIR)/retroarch.cfg
 	install -m644 retroarch.desktop $(DESTDIR)$(PREFIX)/share/applications
 	install -m644 docs/retroarch.6 $(DESTDIR)$(MAN_DIR)/man6
 	install -m644 docs/retroarch-cg2glsl.6 $(DESTDIR)$(MAN_DIR)/man6
 	install -m644 media/retroarch.svg $(DESTDIR)$(PREFIX)/share/pixmaps
+	@if test -d media/assets; then \
+		echo "Installing media assets..."; \
+		mkdir -p $(DESTDIR)$(ASSETS_DIR)/retroarch/assets/xmb; \
+		mkdir -p $(DESTDIR)$(ASSETS_DIR)/retroarch/assets/glui; \
+		cp -r media/assets/xmb/  $(DESTDIR)$(ASSETS_DIR)/retroarch/assets; \
+		cp -r media/assets/glui/ $(DESTDIR)$(ASSETS_DIR)/retroarch/assets; \
+		echo "Removing unneeded source image files.."; \
+		rm -rf $(DESTDIR)$(ASSETS_DIR)/retroarch/assets/xmb/flatui/src; \
+		rm -rf $(DESTDIR)$(ASSETS_DIR)/retroarch/assets/xmb/monochrome/src; \
+		rm -rf $(DESTDIR)$(ASSETS_DIR)/retroarch/assets/xmb/retroactive/src; \
+		rm -rf $(DESTDIR)$(ASSETS_DIR)/retroarch/assets/xmb/neoactive/src; \
+		rm -rf $(DESTDIR)$(ASSETS_DIR)/retroarch/assets/xmb/retroactive_marked/src; \
+		rm -rf $(DESTDIR)$(ASSETS_DIR)/retroarch/assets/xmb/dot-art/src; \
+		echo "Asset copying done."; \
+	fi
 
 uninstall:
-	rm -f $(DESTDIR)$(PREFIX)/bin/retroarch
-	rm -f $(DESTDIR)$(PREFIX)/bin/retroarch-cg2glsl
+	rm -f $(DESTDIR)$(BIN_DIR)/retroarch
+	rm -f $(DESTDIR)$(BIN_DIR)/retroarch-cg2glsl
 	rm -f $(DESTDIR)$(GLOBAL_CONFIG_DIR)/retroarch.cfg
 	rm -f $(DESTDIR)$(PREFIX)/share/applications/retroarch.desktop
 	rm -f $(DESTDIR)$(MAN_DIR)/man6/retroarch.6
 	rm -f $(DESTDIR)$(MAN_DIR)/man6/retroarch-cg2glsl.6
 	rm -f $(DESTDIR)$(PREFIX)/share/pixmaps/retroarch.svg
+	rm -rf $(DESTDIR)$(ASSETS_DIR)/retroarch
 
 clean:
 	rm -rf $(OBJDIR)

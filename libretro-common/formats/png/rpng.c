@@ -1,4 +1,4 @@
-/* Copyright  (C) 2010-2016 The RetroArch team
+/* Copyright  (C) 2010-2017 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this file (rpng.c).
@@ -32,7 +32,8 @@
 #include <boolean.h>
 #include <formats/image.h>
 #include <formats/rpng.h>
-#include <file/archive_file.h>
+#include <streams/trans_stream.h>
+#include <string/stdstring.h>
 
 #include "rpng_internal.h"
 
@@ -112,7 +113,8 @@ struct rpng_process
       unsigned pos;
    } pass;
    void *stream;
-   const struct file_archive_file_backend *stream_backend;
+   size_t avail_in, avail_out, total_out;
+   const struct trans_stream_backend *stream_backend;
 };
 
 struct rpng
@@ -151,7 +153,7 @@ static enum png_chunk_type png_chunk_type(const struct png_chunk *chunk)
 
    for (i = 0; i < ARRAY_SIZE(chunk_map); i++)
    {
-      if (memcmp(chunk->type, chunk_map[i].id, 4) == 0)
+      if (string_is_equal_fast(chunk->type, chunk_map[i].id, 4))
          return chunk_map[i].type;
    }
 
@@ -538,7 +540,7 @@ static int png_reverse_filter_init(const struct png_ihdr *ihdr,
       png_pass_geom(&pngp->ihdr, pngp->pass.width,
             pngp->pass.height, NULL, NULL, &pngp->pass.size);
 
-      if (pngp->pass.size > pngp->stream_backend->stream_get_total_out(pngp->stream))
+      if (pngp->pass.size > pngp->total_out)
       {
          free(pngp->data);
          return -1;
@@ -554,7 +556,7 @@ static int png_reverse_filter_init(const struct png_ihdr *ihdr,
 
    png_pass_geom(ihdr, ihdr->width, ihdr->height, &pngp->bpp, &pngp->pitch, &pass_size);
 
-   if (pngp->stream_backend->stream_get_total_out(pngp->stream) < pass_size)
+   if (pngp->total_out < pass_size)
       return -1;
 
    pngp->restore_buf_size      = 0;
@@ -711,7 +713,7 @@ static int png_reverse_filter_adam7_iterate(uint32_t **data_,
    pngp->inflate_buf            += pngp->pass.size;
    pngp->adam7_restore_buf_size += pngp->pass.size;
 
-   pngp->stream_backend->stream_decrement_total_out(pngp->stream, pngp->pass.size);
+   pngp->total_out -= pngp->pass.size;
 
    png_reverse_filter_adam7_deinterlace_pass(data,
          ihdr, pngp->data, pngp->pass.width, pngp->pass.height, &passes[pngp->pass.pos]);
@@ -768,30 +770,31 @@ static int png_reverse_filter_iterate(rpng_t *rpng, uint32_t **data)
 static int rpng_load_image_argb_process_inflate_init(rpng_t *rpng,
       uint32_t **data, unsigned *width, unsigned *height)
 {
-   int zstatus;
+   bool zstatus;
+   enum trans_stream_error terror;
+   uint32_t rd, wn;
    struct rpng_process *process = (struct rpng_process*)rpng->process;
-   bool to_continue        = (process->stream_backend->stream_get_avail_in(process->stream) > 0
-         && process->stream_backend->stream_get_avail_out(process->stream) > 0);
+   bool to_continue        = (process->avail_in > 0
+         && process->avail_out > 0);
 
    if (!to_continue)
       goto end;
 
-   zstatus = process->stream_backend->stream_decompress_data_to_file_iterate(process->stream);
+   zstatus = process->stream_backend->trans(process->stream, false, &rd, &wn, &terror);
 
-   switch (zstatus)
-   {
-      case 1:
-         goto end;
-      case -1:
-         goto error;
-      default:
-         break;
-   }
+   if (!zstatus && terror != TRANS_STREAM_ERROR_BUFFER_FULL)
+      goto error;
 
-   return 0;
+   process->avail_in -= rd;
+   process->avail_out -= wn;
+   process->total_out += wn;
+
+   if (terror)
+      return 0;
 
 end:
    process->stream_backend->stream_free(process->stream);
+   process->stream = NULL;
 
    *width  = rpng->ihdr.width;
    *height = rpng->ihdr.height;
@@ -870,7 +873,7 @@ static struct rpng_process *rpng_process_init(rpng_t *rpng, unsigned *width, uns
    if (!process)
       return NULL;
 
-   process->stream_backend = file_archive_get_default_file_backend();
+   process->stream_backend = trans_stream_get_zlib_inflate_backend();
 
    png_pass_geom(&rpng->ihdr, rpng->ihdr.width,
          rpng->ihdr.height, NULL, NULL, &process->inflate_buf_size);
@@ -885,23 +888,22 @@ static struct rpng_process *rpng_process_init(rpng_t *rpng, unsigned *width, uns
       return NULL;
    }
 
-   if (!process->stream_backend->stream_decompress_init(process->stream))
-   {
-      free(process);
-      return NULL;
-   }
-
    inflate_buf = (uint8_t*)malloc(process->inflate_buf_size);
    if (!inflate_buf)
       goto error;
 
    process->inflate_buf = inflate_buf;
-   process->stream_backend->stream_set(
+   process->avail_in = rpng->idat_buf.size;
+   process->avail_out = process->inflate_buf_size;
+   process->total_out = 0;
+   process->stream_backend->set_in(
          process->stream,
-         rpng->idat_buf.size,
-         process->inflate_buf_size,
          rpng->idat_buf.data,
-         process->inflate_buf);
+         (uint32_t)rpng->idat_buf.size);
+   process->stream_backend->set_out(
+         process->stream,
+         process->inflate_buf,
+         (uint32_t)process->inflate_buf_size);
 
    return process;
 
@@ -918,7 +920,9 @@ error:
 static bool read_chunk_header(uint8_t *buf, struct png_chunk *chunk)
 {
    unsigned i;
-   uint8_t dword[4] = {0};
+   uint8_t dword[4];
+
+   dword[0] = '\0';
 
    for (i = 0; i < 4; i++)
       dword[i] = buf[i];
@@ -953,8 +957,12 @@ static bool png_parse_ihdr(uint8_t *buf,
 bool rpng_iterate_image(rpng_t *rpng)
 {
    unsigned i;
-   struct png_chunk chunk = {0};
+   struct png_chunk chunk;
    uint8_t *buf           = (uint8_t*)rpng->buff_data;
+
+   chunk.size             = 0;
+   chunk.type[0]          = 0;
+   chunk.data             = NULL;
 
    if (!read_chunk_header(buf, &chunk))
       return false;
@@ -1124,7 +1132,8 @@ void rpng_free(rpng_t *rpng)
       {
          if (rpng->process->stream_backend)
             rpng->process->stream_backend->stream_free(rpng->process->stream);
-         free(rpng->process->stream);
+         else
+            free(rpng->process->stream);
       }
       free(rpng->process);
    }
@@ -1135,15 +1144,17 @@ void rpng_free(rpng_t *rpng)
 bool rpng_start(rpng_t *rpng)
 {
    unsigned i;
-   char header[8] = {0};
+   char header[8];
 
    if (!rpng)
       return false;
+
+   header[0] = '\0';
    
    for (i = 0; i < 8; i++)
       header[i] = rpng->buff_data[i];
 
-   if (memcmp(header, png_magic, sizeof(png_magic)) != 0)
+   if (string_is_not_equal_fast(header, png_magic, sizeof(png_magic)))
       return false;
 
    rpng->buff_data += 8;

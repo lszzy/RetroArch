@@ -1,6 +1,6 @@
 /* RetroArch - A frontend for libretro.
  * Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- * Copyright (C) 2011-2016 - Daniel De Matteis
+ * Copyright (C) 2011-2017 - Daniel De Matteis
  * Copyright (C) 2012-2015 - Michael Lelli
  *
  * RetroArch is free software: you can redistribute it and/or modify it under the terms
@@ -29,6 +29,10 @@
 
 #include <file/file_path.h>
 #include <retro_miscellaneous.h>
+
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
 
 #include "../../verbosity.h"
 
@@ -69,10 +73,15 @@ static void dol_copy_argv_path(const char *dolpath, const char *argpath)
       len += t_len;
    }
    /* a relative path */
-   else if (strstr(dolpath, "sd:/") != dolpath && strstr(dolpath, "usb:/") != dolpath &&
-       strstr(dolpath, "carda:/") != dolpath && strstr(dolpath, "cardb:/") != dolpath)
+   else if (
+         (strstr(dolpath, "sd:/")    != dolpath) && 
+         (strstr(dolpath, "usb:/")   != dolpath) &&
+         (strstr(dolpath, "carda:/") != dolpath) && 
+         (strstr(dolpath, "cardb:/") != dolpath)
+         )
    {
-      fill_pathname_parent_dir(tmp, __system_argv->argv[0], sizeof(tmp));
+      fill_pathname_parent_dir(tmp,
+            __system_argv->argv[0], sizeof(tmp));
       t_len        = strlen(tmp);
       memcpy(cmdline, tmp, t_len);
       len         += t_len;
@@ -132,10 +141,7 @@ void system_exec_wii(const char *_path, bool should_load_game)
 #ifdef IS_SALAMANDER
       strlcpy(game_path, gx_rom_path, sizeof(game_path));
 #else
-      char *fullpath = NULL;
-
-      runloop_ctl(RUNLOOP_CTL_GET_CONTENT_PATH, &fullpath);
-      strlcpy(game_path, fullpath, sizeof(game_path));
+      strlcpy(game_path, path_get(RARCH_PATH_CONTENT), sizeof(game_path));
 #endif
    }
 

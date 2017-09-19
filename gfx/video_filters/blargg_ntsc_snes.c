@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2014 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -19,6 +19,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <boolean.h>
+
+#include <string/stdstring.h>
+
 #include "snes_ntsc/snes_ntsc.h"
 #include "snes_ntsc/snes_ntsc.c"
 
@@ -80,22 +83,22 @@ static void blargg_ntsc_snes_initialize(void *data,
 
    if (config->get_string(userdata, "tvtype", &tvtype, "composite"))
    {
-      if (!strcmp(tvtype, "composite"))
+      if (memcmp(tvtype, "composite", 9) == 0)
       {
          setup = snes_ntsc_composite;
          setup.merge_fields = 1;
       }
-      else if (!strcmp(tvtype, "rf"))
+      else if (memcmp(tvtype, "rf", 2) == 0)
       {
          setup = snes_ntsc_composite;
          setup.merge_fields = 0;
       }
-      else if (!strcmp(tvtype, "rgb"))
+      else if (memcmp(tvtype, "rgb", 3) == 0)
       {
          setup = snes_ntsc_rgb;
          setup.merge_fields = 1;
       }
-      else if (!strcmp(tvtype, "svideo"))
+      else if (memcmp(tvtype, "svideo", 6) == 0)
       {
          setup = snes_ntsc_svideo;
          setup.merge_fields = 1;
@@ -201,9 +204,9 @@ static void blargg_ntsc_snes_work_cb_rgb565(void *data, void *thread_data)
 
    blargg_ntsc_snes_rgb565(data, width, height,
          thr->first, thr->last, input,
-         thr->in_pitch / SOFTFILTER_BPP_RGB565,
+         (unsigned)(thr->in_pitch / SOFTFILTER_BPP_RGB565),
          output,
-         thr->out_pitch / SOFTFILTER_BPP_RGB565);
+         (unsigned)(thr->out_pitch / SOFTFILTER_BPP_RGB565));
 }
 
 static void blargg_ntsc_snes_generic_packets(void *data,

@@ -1,5 +1,5 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -13,51 +13,50 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <retro_miscellaneous.h>
+#include <stdlib.h>
+
 #include <net/net_http.h>
-#include <queues/message_queue.h>
-#include <lists/string_list.h>
 #include <string/stdstring.h>
 #include <compat/strl.h>
 #include <file/file_path.h>
-#include <file/archive_file.h>
 #include <net/net_compat.h>
-#include <retro_stat.h>
+#include <retro_timers.h>
 
-#include "../msg_hash.h"
 #include "../verbosity.h"
 #include "tasks_internal.h"
 
 enum http_status_enum
 {
-   HTTP_STATUS_POLL = 0,
-   HTTP_STATUS_CONNECTION_TRANSFER,
+   HTTP_STATUS_CONNECTION_TRANSFER = 0,
    HTTP_STATUS_CONNECTION_TRANSFER_PARSE,
    HTTP_STATUS_TRANSFER,
    HTTP_STATUS_TRANSFER_PARSE,
    HTTP_STATUS_TRANSFER_PARSE_FREE
 };
 
-typedef struct http_transfer_info
+struct http_transfer_info
 {
-   char url[PATH_MAX_LENGTH];
+   char url[255];
    int progress;
-} http_transfer_info_t;
+};
 
-typedef struct http_handle
+struct http_handle
 {
    struct
    {
       struct http_connection_t *handle;
       transfer_cb_t  cb;
-      char elem1[PATH_MAX_LENGTH];
-      char url[PATH_MAX_LENGTH];
+      char elem1[255];
+      char url[255];
    } connection;
    struct http_t *handle;
    transfer_cb_t  cb;
    unsigned status;
    bool error;
-} http_handle_t;
+};
+
+typedef struct http_transfer_info http_transfer_info_t;
+typedef struct http_handle http_handle_t;
 
 static int task_http_con_iterate_transfer(http_handle_t *http)
 {
@@ -119,9 +118,13 @@ static int task_http_iterate_transfer(retro_task_t *task)
    http_handle_t *http  = (http_handle_t*)task->state;
    size_t pos  = 0, tot = 0;
 
+   /* FIXME: This wouldn't be needed if we could wait for a timeout */
+   if (task_queue_is_threaded())
+      retro_sleep(1);
+
    if (!net_http_update(http->handle, &pos, &tot))
    {
-      task->progress = (tot == 0) ? -1 : (signed)(pos * 100 / tot);
+      task_set_progress(task, (tot == 0) ? -1 : (signed)(pos * 100 / tot));
       return -1;
    }
 
@@ -133,7 +136,7 @@ static void task_http_transfer_handler(retro_task_t *task)
    http_transfer_data_t *data = NULL;
    http_handle_t        *http = (http_handle_t*)task->state;
 
-   if (task->cancelled)
+   if (task_get_cancelled(task))
       goto task_finished;
 
    switch (http->status)
@@ -151,7 +154,6 @@ static void task_http_transfer_handler(retro_task_t *task)
             goto task_finished;
          break;
       case HTTP_STATUS_TRANSFER_PARSE:
-      case HTTP_STATUS_POLL:
          goto task_finished;
       default:
          break;
@@ -162,7 +164,7 @@ static void task_http_transfer_handler(retro_task_t *task)
 
    return;
 task_finished:
-   task->finished = true;
+   task_set_finished(task, true);
 
    if (http->handle)
    {
@@ -172,17 +174,17 @@ task_finished:
       if (tmp && http->cb)
          http->cb(tmp, len);
 
-      if (net_http_error(http->handle) || task->cancelled)
+      if (net_http_error(http->handle) || task_get_cancelled(task))
       {
          tmp = (char*)net_http_data(http->handle, &len, true);
 
          if (tmp)
             free(tmp);
 
-         if (task->cancelled)
-            task->error = strdup("Task cancelled.");
+         if (task_get_cancelled(task))
+            task_set_error(task, strdup("Task cancelled."));
          else
-            task->error = strdup("Download failed.");
+            task_set_error(task, strdup("Download failed."));
       }
       else
       {
@@ -190,12 +192,12 @@ task_finished:
          data->data = tmp;
          data->len  = len;
 
-         task->task_data = data;
+         task_set_data(task, data);
       }
 
       net_http_delete(http->handle);
    } else if (http->error)
-      task->error = strdup("Internal error.");
+      task_set_error(task, strdup("Internal error."));
 
    free(http);
 }
@@ -228,33 +230,34 @@ static bool task_http_retriever(retro_task_t *task, void *data)
 
    /* Fill HTTP info link */
    strlcpy(info->url, http->connection.url, sizeof(info->url));
-   info->progress = task->progress;
+   info->progress = task_get_progress(task);
    return true;
 }
 
-void *task_push_http_transfer(const char *url, bool mute, const char *type,
+static void* task_push_http_transfer_generic(
+      struct http_connection_t *conn,
+      const char *url, bool mute, const char *type,
       retro_task_callback_t cb, void *user_data)
 {
    task_finder_data_t find_data;
-   char tmp[PATH_MAX_LENGTH]      = {0};
-   struct http_connection_t *conn = NULL;
+   char tmp[255];
    retro_task_t  *t               = NULL;
    http_handle_t *http            = NULL;
 
    if (string_is_empty(url))
       return NULL;
 
+   tmp[0]             = '\0';
+
    find_data.func     = task_http_finder;
    find_data.userdata = (void*)url;
 
    /* Concurrent download of the same file is not allowed */
-   if (task_queue_ctl(TASK_QUEUE_CTL_FIND, &find_data))
+   if (task_queue_find(&find_data))
    {
       RARCH_LOG("[http] '%s'' is already being downloaded.\n", url);
       return NULL;
    }
-
-   conn = net_http_connection_new(url);
 
    if (!conn)
       return NULL;
@@ -290,7 +293,7 @@ void *task_push_http_transfer(const char *url, bool mute, const char *type,
 
    t->title                = strdup(tmp);
 
-   task_queue_ctl(TASK_QUEUE_CTL_PUSH, t);
+   task_queue_push(t);
 
    return t;
 
@@ -303,6 +306,29 @@ error:
    return NULL;
 }
 
+void* task_push_http_transfer(const char *url, bool mute,
+      const char *type,
+      retro_task_callback_t cb, void *user_data)
+{
+   struct http_connection_t *conn;
+
+   conn = net_http_connection_new(url, "GET", NULL);
+
+   return task_push_http_transfer_generic(conn, url, mute, type, cb, user_data);
+}
+
+void* task_push_http_post_transfer(const char *url,
+      const char *post_data, bool mute,
+      const char *type, retro_task_callback_t cb, void *user_data)
+{
+   struct http_connection_t *conn;
+
+   conn = net_http_connection_new(url, "POST", post_data);
+
+   return task_push_http_transfer_generic(conn,
+         url, mute, type, cb, user_data);
+}
+
 task_retriever_info_t *http_task_get_transfer_list(void)
 {
    task_retriever_data_t retrieve_data;
@@ -313,6 +339,7 @@ task_retriever_info_t *http_task_get_transfer_list(void)
    retrieve_data.func         = task_http_retriever;
 
    /* Build list of current HTTP transfers and return it */
-   task_queue_ctl(TASK_QUEUE_CTL_RETRIEVE, &retrieve_data);
+   task_queue_retrieve(&retrieve_data);
+
    return retrieve_data.list;
 }

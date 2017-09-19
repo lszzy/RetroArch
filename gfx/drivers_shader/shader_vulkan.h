@@ -1,5 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2016 - Hans-Kristian Arntzen
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -31,7 +32,18 @@ typedef struct vulkan_filter_chain vulkan_filter_chain_t;
 enum vulkan_filter_chain_filter
 {
    VULKAN_FILTER_CHAIN_LINEAR  = 0,
-   VULKAN_FILTER_CHAIN_NEAREST = 1
+   VULKAN_FILTER_CHAIN_NEAREST = 1,
+   VULKAN_FILTER_CHAIN_COUNT
+};
+
+enum vulkan_filter_chain_address
+{
+   VULKAN_FILTER_CHAIN_ADDRESS_REPEAT               = 0,
+   VULKAN_FILTER_CHAIN_ADDRESS_MIRRORED_REPEAT      = 1,
+   VULKAN_FILTER_CHAIN_ADDRESS_CLAMP_TO_EDGE        = 2,
+   VULKAN_FILTER_CHAIN_ADDRESS_CLAMP_TO_BORDER      = 3,
+   VULKAN_FILTER_CHAIN_ADDRESS_MIRROR_CLAMP_TO_EDGE = 4,
+   VULKAN_FILTER_CHAIN_ADDRESS_COUNT
 };
 
 struct vulkan_filter_chain_texture
@@ -65,6 +77,11 @@ struct vulkan_filter_chain_pass_info
 
    /* The filter to use for source in this pass. */
    enum vulkan_filter_chain_filter source_filter;
+   enum vulkan_filter_chain_filter mip_filter;
+   enum vulkan_filter_chain_address address;
+
+   /* Maximum number of mip-levels to use. */
+   unsigned max_levels;
 };
 
 struct vulkan_filter_chain_swapchain_info
@@ -81,6 +98,8 @@ struct vulkan_filter_chain_create_info
    VkPhysicalDevice gpu;
    const VkPhysicalDeviceMemoryProperties *memory_properties;
    VkPipelineCache pipeline_cache;
+   VkQueue queue;
+   VkCommandPool command_pool;
    unsigned num_passes;
 
    VkFormat original_format;
@@ -131,6 +150,8 @@ void vulkan_filter_chain_build_offscreen_passes(vulkan_filter_chain_t *chain,
       VkCommandBuffer cmd, const VkViewport *vp);
 void vulkan_filter_chain_build_viewport_pass(vulkan_filter_chain_t *chain,
       VkCommandBuffer cmd, const VkViewport *vp, const float *mvp);
+void vulkan_filter_chain_end_frame(vulkan_filter_chain_t *chain,
+      VkCommandBuffer cmd);
 
 vulkan_filter_chain_t *vulkan_filter_chain_create_default(
       const struct vulkan_filter_chain_create_info *info,

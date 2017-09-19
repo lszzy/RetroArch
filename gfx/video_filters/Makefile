@@ -3,6 +3,8 @@ extra_flags :=
 use_neon    := 0
 release	    := release
 DYLIB	    := so
+PREFIX      := /usr
+INSTALLDIR  := $(PREFIX)/lib/retroarch/filters/video
 
 ifeq ($(platform),)
 platform = unix
@@ -57,7 +59,7 @@ endif
 
 CC      := $(compiler)
 CXX     := $(subst CC,++,$(compiler))
-flags   := $(CFLAGS) -fPIC $(extra_flags) -I../../libretro-common/include
+flags   := $(CPPFLAGS) $(CFLAGS) -fPIC $(extra_flags) -I../../libretro-common/include
 asflags := $(ASFLAGS) -fPIC  $(extra_flags)
 objects :=
 flags   += -std=c99
@@ -89,3 +91,10 @@ clean:
 
 strip:
 	strip -s *.$(DYLIB)
+
+install:
+	mkdir -p $(DESTDIR)$(INSTALLDIR)
+	cp -t $(DESTDIR)$(INSTALLDIR) $(objects) *.filt
+
+test-install:
+	DESTDIR=/tmp/build $(MAKE) install

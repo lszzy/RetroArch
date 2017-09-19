@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  copyright (c) 2011-2015 - Daniel De Matteis
+ *  copyright (c) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -23,224 +23,45 @@
 #include "../../config.h"
 #endif
 
-#include <glsym/glsym.h>
-
 #include <retro_inline.h>
 #include <gfx/math/matrix_4x4.h>
 #include <gfx/scaler/scaler.h>
 #include <formats/image.h>
 
-#include "../../general.h"
 #include "../../verbosity.h"
 #include "../font_driver.h"
 #include "../video_coord_array.h"
-#include "../video_context_driver.h"
+#include "../video_driver.h"
+#include "../drivers/gl_symlinks.h"
 
-#if (!defined(HAVE_OPENGLES) || defined(HAVE_OPENGLES3))
-#ifdef GL_PIXEL_PACK_BUFFER
-#define HAVE_GL_ASYNC_READBACK
-#endif
-#endif
+RETRO_BEGIN_DECLS
 
-#if defined(HAVE_PSGL)
-#define RARCH_GL_FRAMEBUFFER GL_FRAMEBUFFER_OES
-#define RARCH_GL_FRAMEBUFFER_COMPLETE GL_FRAMEBUFFER_COMPLETE_OES
-#define RARCH_GL_COLOR_ATTACHMENT0 GL_COLOR_ATTACHMENT0_EXT
-#elif defined(OSX_PPC)
-#define RARCH_GL_FRAMEBUFFER GL_FRAMEBUFFER_EXT
-#define RARCH_GL_FRAMEBUFFER_COMPLETE GL_FRAMEBUFFER_COMPLETE_EXT
-#define RARCH_GL_COLOR_ATTACHMENT0 GL_COLOR_ATTACHMENT0_EXT
-#else
-#define RARCH_GL_FRAMEBUFFER GL_FRAMEBUFFER
-#define RARCH_GL_FRAMEBUFFER_COMPLETE GL_FRAMEBUFFER_COMPLETE
-#define RARCH_GL_COLOR_ATTACHMENT0 GL_COLOR_ATTACHMENT0
-#endif
-
-#if defined(HAVE_OPENGLES2)
-#define RARCH_GL_RENDERBUFFER GL_RENDERBUFFER
-#define RARCH_GL_DEPTH24_STENCIL8 GL_DEPTH24_STENCIL8_OES
-#define RARCH_GL_DEPTH_ATTACHMENT GL_DEPTH_ATTACHMENT
-#define RARCH_GL_STENCIL_ATTACHMENT GL_STENCIL_ATTACHMENT
-#elif defined(OSX_PPC)
-#define RARCH_GL_RENDERBUFFER GL_RENDERBUFFER_EXT
-#define RARCH_GL_DEPTH24_STENCIL8 GL_DEPTH24_STENCIL8_EXT
-#define RARCH_GL_DEPTH_ATTACHMENT GL_DEPTH_ATTACHMENT_EXT
-#define RARCH_GL_STENCIL_ATTACHMENT GL_STENCIL_ATTACHMENT_EXT
-#elif defined(HAVE_PSGL)
-#define RARCH_GL_RENDERBUFFER GL_RENDERBUFFER_OES
-#define RARCH_GL_DEPTH24_STENCIL8 GL_DEPTH24_STENCIL8_SCE
-#define RARCH_GL_DEPTH_ATTACHMENT GL_DEPTH_ATTACHMENT_OES
-#define RARCH_GL_STENCIL_ATTACHMENT GL_STENCIL_ATTACHMENT_OES
-#else
-#define RARCH_GL_RENDERBUFFER GL_RENDERBUFFER
-#define RARCH_GL_DEPTH24_STENCIL8 GL_DEPTH24_STENCIL8
-#define RARCH_GL_DEPTH_ATTACHMENT GL_DEPTH_ATTACHMENT
-#define RARCH_GL_STENCIL_ATTACHMENT GL_STENCIL_ATTACHMENT
-#endif
-
-#ifdef OSX_PPC
-#define RARCH_GL_MAX_RENDERBUFFER_SIZE GL_MAX_RENDERBUFFER_SIZE_EXT
-#elif defined(HAVE_PSGL)
-#define RARCH_GL_MAX_RENDERBUFFER_SIZE GL_MAX_RENDERBUFFER_SIZE_OES
-#else
-#define RARCH_GL_MAX_RENDERBUFFER_SIZE GL_MAX_RENDERBUFFER_SIZE
-#endif
-
-#if defined(HAVE_PSGL)
-#define glGenerateMipmap glGenerateMipmapOES
-#endif
-
-#ifdef HAVE_FBO
-
-#if defined(__APPLE__) || defined(HAVE_PSGL)
-#define GL_RGBA32F GL_RGBA32F_ARB
-#endif
-
-#endif
-
-#if defined(HAVE_PSGL)
-#define RARCH_GL_INTERNAL_FORMAT32 GL_ARGB_SCE
-#define RARCH_GL_INTERNAL_FORMAT16 GL_RGB5 /* TODO: Verify if this is really 565 or just 555. */
-#define RARCH_GL_TEXTURE_TYPE32 GL_BGRA
-#define RARCH_GL_TEXTURE_TYPE16 GL_BGRA
-#define RARCH_GL_FORMAT32 GL_UNSIGNED_INT_8_8_8_8_REV
-#define RARCH_GL_FORMAT16 GL_RGB5
-#elif defined(HAVE_OPENGLES)
-/* Imgtec/SGX headers have this missing. */
-#ifndef GL_BGRA_EXT
-#define GL_BGRA_EXT 0x80E1
-#endif
-#ifdef IOS
-/* Stupid Apple. */
-#define RARCH_GL_INTERNAL_FORMAT32 GL_RGBA
-#else
-#define RARCH_GL_INTERNAL_FORMAT32 GL_BGRA_EXT
-#endif
-#define RARCH_GL_INTERNAL_FORMAT16 GL_RGB
-#define RARCH_GL_TEXTURE_TYPE32 GL_BGRA_EXT
-#define RARCH_GL_TEXTURE_TYPE16 GL_RGB
-#define RARCH_GL_FORMAT32 GL_UNSIGNED_BYTE
-#define RARCH_GL_FORMAT16 GL_UNSIGNED_SHORT_5_6_5
-#else
-/* On desktop, we always use 32-bit. */
-#define RARCH_GL_INTERNAL_FORMAT32 GL_RGBA8
-#define RARCH_GL_INTERNAL_FORMAT16 GL_RGBA8
-#define RARCH_GL_TEXTURE_TYPE32 GL_BGRA
-#define RARCH_GL_TEXTURE_TYPE16 GL_BGRA
-#define RARCH_GL_FORMAT32 GL_UNSIGNED_INT_8_8_8_8_REV
-#define RARCH_GL_FORMAT16 GL_UNSIGNED_INT_8_8_8_8_REV
-
-/* GL_RGB565 internal format isn't in desktop GL 
- * until 4.1 core (ARB_ES2_compatibility).
- * Check for this. */
-#ifndef GL_RGB565
-#define GL_RGB565 0x8D62
-#endif
-#define RARCH_GL_INTERNAL_FORMAT16_565 GL_RGB565
-#define RARCH_GL_TEXTURE_TYPE16_565 GL_RGB
-#define RARCH_GL_FORMAT16_565 GL_UNSIGNED_SHORT_5_6_5
-#endif
-
-/* Platform specific workarounds/hacks. */
-#if defined(__CELLOS_LV2__)
-#define NO_GL_READ_PIXELS
-#endif
-
-#if defined(HAVE_OPENGL_MODERN) || defined(HAVE_OPENGLES2) || defined(HAVE_PSGL)
-#ifndef NO_GL_FF_VERTEX
-#define NO_GL_FF_VERTEX
-#endif
-#endif
-
-#if defined(HAVE_OPENGL_MODERN) || defined(HAVE_OPENGLES2) || defined(HAVE_PSGL)
-#ifndef NO_GL_FF_MATRIX
-#define NO_GL_FF_MATRIX
-#endif
-#endif
-
-#if defined(HAVE_OPENGLES2) /* TODO: Figure out exactly what. */
-#define NO_GL_CLAMP_TO_BORDER
-#endif
-
-#if defined(HAVE_OPENGLES)
-#ifndef GL_UNPACK_ROW_LENGTH
-#define GL_UNPACK_ROW_LENGTH  0x0CF2
-#endif
-
-#ifndef GL_SRGB_ALPHA_EXT
-#define GL_SRGB_ALPHA_EXT 0x8C42
-#endif
-#endif
+#define MAX_FENCES 4
 
 typedef struct gl
 {
-   int version_major;
-   int version_minor;
+   GLenum internal_fmt;
+   GLenum texture_type; /* RGB565 or ARGB */
+   GLenum texture_fmt;
+   GLenum wrap_mode;
 
    bool vsync;
-   GLuint texture[GFX_MAX_TEXTURES];
-   unsigned tex_index; /* For use with PREV. */
-   unsigned textures;
-   struct video_tex_info tex_info;
-   struct video_tex_info prev_info[GFX_MAX_TEXTURES];
-   GLuint tex_mag_filter;
-   GLuint tex_min_filter;
    bool tex_mipmap;
-
-   void *empty_buf;
-
-   void *conv_buffer;
-   struct scaler_ctx scaler;
-
 #ifdef HAVE_FBO
-   /* Render-to-texture, multipass shaders. */
-   GLuint fbo[GFX_MAX_SHADERS];
-   GLuint fbo_texture[GFX_MAX_SHADERS];
-   struct video_fbo_rect fbo_rect[GFX_MAX_SHADERS];
-   struct gfx_fbo_scale fbo_scale[GFX_MAX_SHADERS];
-   int fbo_pass;
    bool fbo_inited;
-
    bool fbo_feedback_enable;
-   unsigned fbo_feedback_pass;
-   GLuint fbo_feedback;
-   GLuint fbo_feedback_texture;
-
-   GLuint hw_render_fbo[GFX_MAX_TEXTURES];
-   GLuint hw_render_depth[GFX_MAX_TEXTURES];
    bool hw_render_fbo_init;
    bool hw_render_depth_init;
-   bool has_fp_fbo;
-   bool has_srgb_fbo;
    bool has_srgb_fbo_gles3;
 #endif
+   bool has_fp_fbo;
+   bool has_srgb_fbo;
    bool hw_render_use;
 
    bool should_resize;
    bool quitting;
    bool fullscreen;
    bool keep_aspect;
-   unsigned rotation;
-
-   struct video_viewport vp;
-   unsigned vp_out_width;
-   unsigned vp_out_height;
-   unsigned last_width[GFX_MAX_TEXTURES];
-   unsigned last_height[GFX_MAX_TEXTURES];
-   unsigned tex_w, tex_h;
-   math_matrix_4x4 mvp, mvp_no_rot;
-
-   struct video_coords coords;
-   const float *vertex_ptr;
-   const float *white_color_ptr;
-
-   GLuint pbo;
-
-   GLenum internal_fmt;
-   GLenum texture_type; /* RGB565 or ARGB */
-   GLenum texture_fmt;
-   GLenum wrap_mode;
-   unsigned base_size; /* 2 or 4 */
 #ifdef HAVE_OPENGLES
    bool support_unpack_row_length;
 #else
@@ -249,72 +70,146 @@ typedef struct gl
    bool have_full_npot_support;
 
    bool egl_images;
-   video_info_t video_info;
-
 #ifdef HAVE_OVERLAY
-   unsigned overlays;
    bool overlay_enable;
    bool overlay_full_screen;
+#endif
+#ifdef HAVE_MENU
+   bool menu_texture_enable;
+   bool menu_texture_full_screen;
+#endif
+#ifdef HAVE_GL_SYNC
+   bool have_sync;
+#endif
+#ifdef HAVE_GL_ASYNC_READBACK
+   bool pbo_readback_valid[4];
+   bool pbo_readback_enable;
+#endif
+
+   int version_major;
+   int version_minor;
+   int fbo_pass;
+
+   GLuint tex_mag_filter;
+   GLuint tex_min_filter;
+#ifdef HAVE_FBO
+   GLuint fbo_feedback;
+   GLuint fbo_feedback_texture;
+#endif
+   GLuint pbo;
+#ifdef HAVE_OVERLAY
    GLuint *overlay_tex;
+#endif
+#if defined(HAVE_MENU)
+   GLuint menu_texture;
+#endif
+   GLuint vao;
+#ifdef HAVE_GL_ASYNC_READBACK
+   GLuint pbo_readback[4];
+#endif
+   GLuint texture[GFX_MAX_TEXTURES];
+#ifdef HAVE_FBO
+   GLuint fbo[GFX_MAX_SHADERS];
+   GLuint fbo_texture[GFX_MAX_SHADERS];
+   GLuint hw_render_fbo[GFX_MAX_TEXTURES];
+   GLuint hw_render_depth[GFX_MAX_TEXTURES];
+#endif
+
+   unsigned tex_index; /* For use with PREV. */
+   unsigned textures;
+#ifdef HAVE_FBO
+   unsigned fbo_feedback_pass;
+#endif
+   unsigned rotation;
+   unsigned vp_out_width;
+   unsigned vp_out_height;
+   unsigned tex_w;
+   unsigned tex_h;
+   unsigned base_size; /* 2 or 4 */
+#ifdef HAVE_OVERLAY
+   unsigned overlays;
+#endif
+#ifdef HAVE_GL_ASYNC_READBACK
+   unsigned pbo_readback_index;
+#endif
+#ifdef HAVE_GL_SYNC
+   unsigned fence_count;
+#endif
+   unsigned last_width[GFX_MAX_TEXTURES];
+   unsigned last_height[GFX_MAX_TEXTURES];
+
+#if defined(HAVE_MENU)
+   float menu_texture_alpha;
+#endif
+
+   void *empty_buf;
+   void *conv_buffer;
+   void *readback_buffer_screenshot;
+   const float *vertex_ptr;
+   const float *white_color_ptr;
+#ifdef HAVE_OVERLAY
    float *overlay_vertex_coord;
    float *overlay_tex_coord;
    float *overlay_color_coord;
 #endif
 
+   struct video_tex_info tex_info;
 #ifdef HAVE_GL_ASYNC_READBACK
-   /* PBOs used for asynchronous viewport readbacks. */
-   GLuint pbo_readback[4];
-   bool pbo_readback_valid[4];
-   bool pbo_readback_enable;
-   unsigned pbo_readback_index;
    struct scaler_ctx pbo_readback_scaler;
 #endif
-   void *readback_buffer_screenshot;
-
-#if defined(HAVE_MENU)
-   GLuint menu_texture;
-   bool menu_texture_enable;
-   bool menu_texture_full_screen;
-   float menu_texture_alpha;
+   struct video_viewport vp;
+   math_matrix_4x4 mvp, mvp_no_rot;
+   struct video_coords coords;
+   struct scaler_ctx scaler;
+   video_info_t video_info;
+   struct video_tex_info prev_info[GFX_MAX_TEXTURES];
+#ifdef HAVE_FBO
+   struct video_fbo_rect fbo_rect[GFX_MAX_SHADERS];
+   struct gfx_fbo_scale fbo_scale[GFX_MAX_SHADERS];
 #endif
 
 #ifdef HAVE_GL_SYNC
-#define MAX_FENCES 4
-   bool have_sync;
    GLsync fences[MAX_FENCES];
-   unsigned fence_count;
 #endif
-
-   GLuint vao;
 } gl_t;
-
-static INLINE bool gl_check_error(void)
-{
-   int error = glGetError();
-   switch (error)
-   {
-      case GL_INVALID_ENUM:
-         RARCH_ERR("GL: Invalid enum.\n");
-         break;
-      case GL_INVALID_VALUE:
-         RARCH_ERR("GL: Invalid value.\n");
-         break;
-      case GL_INVALID_OPERATION:
-         RARCH_ERR("GL: Invalid operation.\n");
-         break;
-      case GL_OUT_OF_MEMORY:
-         RARCH_ERR("GL: Out of memory.\n");
-         break;
-      case GL_NO_ERROR:
-         return true;
-   }
-
-   RARCH_ERR("Non specified GL error.\n");
-   return false;
-}
 
 bool gl_load_luts(const struct video_shader *generic_shader,
       GLuint *lut_textures);
+
+#ifdef NO_GL_FF_VERTEX
+#define gl_ff_vertex(coords) ((void)0)
+#else
+static INLINE void gl_ff_vertex(const struct video_coords *coords)
+{
+   /* Fall back to fixed function-style if needed and possible. */
+   glClientActiveTexture(GL_TEXTURE1);
+   glTexCoordPointer(2, GL_FLOAT, 0, coords->lut_tex_coord);
+   glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+   glClientActiveTexture(GL_TEXTURE0);
+   glVertexPointer(2, GL_FLOAT, 0, coords->vertex);
+   glEnableClientState(GL_VERTEX_ARRAY);
+   glColorPointer(4, GL_FLOAT, 0, coords->color);
+   glEnableClientState(GL_COLOR_ARRAY);
+   glTexCoordPointer(2, GL_FLOAT, 0, coords->tex_coord);
+   glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+}
+#endif
+
+#ifdef NO_GL_FF_MATRIX
+#define gl_ff_matrix(mat) ((void)0)
+#else
+static INLINE void gl_ff_matrix(const math_matrix_4x4 *mat)
+{
+   math_matrix_4x4 ident;
+
+   /* Fall back to fixed function-style if needed and possible. */
+   glMatrixMode(GL_PROJECTION);
+   glLoadMatrixf(mat->data);
+   glMatrixMode(GL_MODELVIEW);
+   matrix_4x4_identity(ident);
+   glLoadMatrixf(ident.data);
+}
+#endif
 
 static INLINE unsigned gl_wrap_type_to_enum(enum gfx_wrap_type type)
 {
@@ -337,8 +232,18 @@ static INLINE unsigned gl_wrap_type_to_enum(enum gfx_wrap_type type)
    return 0;
 }
 
+
 bool gl_query_core_context_in_use(void);
-void gl_ff_vertex(const struct video_coords *coords);
-void gl_ff_matrix(const math_matrix_4x4 *mat);
+void gl_load_texture_image(GLenum target,
+      GLint level,
+      GLint internalFormat,
+      GLsizei width,
+      GLsizei height,
+      GLint border,
+      GLenum format,
+      GLenum type,
+      const GLvoid * data);
+
+RETRO_END_DECLS
 
 #endif

@@ -1,7 +1,7 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
- *  Copyright (C) 2014-2015 - Alfred Agrell
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
+ *  Copyright (C) 2014-2017 - Alfred Agrell
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -16,21 +16,24 @@
  */
 
 #define __STDC_LIMIT_MACROS
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <retro_inline.h>
-#include <algorithms/mismatch.h>
+#include <compat/strl.h>
+#include <compat/intrinsics.h>
 
 #include "state_manager.h"
-#include "../configuration.h"
 #include "../msg_hash.h"
 #include "../movie.h"
 #include "../core.h"
-#include "../runloop.h"
-#include "../performance_counters.h"
 #include "../verbosity.h"
 #include "../audio/audio_driver.h"
+
+#ifdef HAVE_NETWORKING
+#include "../network/netplay/netplay.h"
+#endif
 
 /* This makes Valgrind throw errors if a core overflows its savestate size. */
 /* Keep it off unless you're chasing a core bug, it slows things down. */
@@ -43,6 +46,116 @@
 #ifndef UINT32_MAX
 #define UINT32_MAX 0xffffffffu
 #endif
+
+#if defined(__x86_64__) || defined(__i386__) || defined(__i486__) || defined(__i686__)
+#define CPU_X86
+#endif
+
+/* Other arches SIGBUS (usually) on unaligned accesses. */
+#ifndef CPU_X86
+#define NO_UNALIGNED_MEM
+#endif
+
+#if __SSE2__
+#include <emmintrin.h>
+#endif
+
+/* There's no equivalent in libc, you'd think so ...
+ * std::mismatch exists, but it's not optimized at all. */
+static size_t find_change(const uint16_t *a, const uint16_t *b)
+{
+#if __SSE2__
+   const __m128i *a128 = (const __m128i*)a;
+   const __m128i *b128 = (const __m128i*)b;
+   
+   for (;;)
+   {
+      __m128i v0    = _mm_loadu_si128(a128);
+      __m128i v1    = _mm_loadu_si128(b128);
+      __m128i c     = _mm_cmpeq_epi32(v0, v1);
+      uint32_t mask = _mm_movemask_epi8(c);
+
+      if (mask != 0xffff) /* Something has changed, figure out where. */
+      {
+         size_t ret = (((uint8_t*)a128 - (uint8_t*)a) |
+               (compat_ctz(~mask))) >> 1;
+         return ret | (a[ret] == b[ret]);
+      }
+
+      a128++;
+      b128++;
+   }
+#else
+   const uint16_t *a_org = a;
+#ifdef NO_UNALIGNED_MEM
+   while (((uintptr_t)a & (sizeof(size_t) - 1)) && *a == *b)
+   {
+      a++;
+      b++;
+   }
+   if (*a == *b)
+#endif
+   {
+      const size_t *a_big = (const size_t*)a;
+      const size_t *b_big = (const size_t*)b;
+      
+      while (*a_big == *b_big)
+      {
+         a_big++;
+         b_big++;
+      }
+      a = (const uint16_t*)a_big;
+      b = (const uint16_t*)b_big;
+      
+      while (*a == *b)
+      {
+         a++;
+         b++;
+      }
+   }
+   return a - a_org;
+#endif
+}
+
+static size_t find_same(const uint16_t *a, const uint16_t *b)
+{
+   const uint16_t *a_org = a;
+#ifdef NO_UNALIGNED_MEM
+   if (((uintptr_t)a & (sizeof(uint32_t) - 1)) && *a != *b)
+   {
+      a++;
+      b++;
+   }
+   if (*a != *b)
+#endif
+   {
+      /* With this, it's random whether two consecutive identical
+       * words are caught.
+       *
+       * Luckily, compression rate is the same for both cases, and 
+       * three is always caught.
+       *
+       * (We prefer to miss two-word blocks, anyways; fewer iterations 
+       * of the outer loop, as well as in the decompressor.) */
+      const uint32_t *a_big = (const uint32_t*)a;
+      const uint32_t *b_big = (const uint32_t*)b;
+      
+      while (*a_big != *b_big)
+      {
+         a_big++;
+         b_big++;
+      }
+      a = (const uint16_t*)a_big;
+      b = (const uint16_t*)b_big;
+      
+      if (a != a_org && a[-1] == b[-1])
+      {
+         a--;
+         b--;
+      }
+   }
+   return a - a_org;
+}
 
 struct state_manager
 {
@@ -100,7 +213,7 @@ struct state_manager_rewind_state
 };
 
 static struct state_manager_rewind_state rewind_state;
-static bool frame_is_reversed;
+static bool frame_is_reversed                         = false;
 
 /* Returns the maximum compressed size of a savestate. 
  * It is very likely to compress to far less. */
@@ -299,50 +412,70 @@ static void state_manager_free(state_manager_t *state)
    if (!state)
       return;
 
-   free(state->data);
-   free(state->thisblock);
-   free(state->nextblock);
+   if (state->data)
+      free(state->data);
+   if (state->thisblock)
+      free(state->thisblock);
+   if (state->nextblock)
+      free(state->nextblock);
 #if STRICT_BUF_SIZE
-   free(state->debugblock);
+   if (state->debugblock)
+      free(state->debugblock);
+   state->debugblock = NULL;
 #endif
-   free(state);
+   state->data       = NULL;
+   state->thisblock  = NULL;
+   state->nextblock  = NULL;
 }
 
 static state_manager_t *state_manager_new(size_t state_size, size_t buffer_size)
 {
+   size_t max_comp_size, block_size;
+   uint8_t *next_block    = NULL;
+   uint8_t *this_block    = NULL;
+   uint8_t *state_data    = NULL;
    state_manager_t *state = (state_manager_t*)calloc(1, sizeof(*state));
 
    if (!state)
       return NULL;
 
-   state->blocksize   = (state_size + sizeof(uint16_t) - 1) & ~sizeof(uint16_t);
+   block_size         = (state_size + sizeof(uint16_t) - 1) & -sizeof(uint16_t);
+
    /* the compressed data is surrounded by pointers to the other side */
-   state->maxcompsize = state_manager_raw_maxsize(state_size) + sizeof(size_t) * 2;
-   state->data        = (uint8_t*)malloc(buffer_size);
+   max_comp_size      = state_manager_raw_maxsize(state_size) + sizeof(size_t) * 2;
+   state_data         = (uint8_t*)malloc(buffer_size);
 
-   if (!state->data)
+   if (!state_data)
       goto error;
 
-   state->thisblock   = (uint8_t*)state_manager_raw_alloc(state_size, 0);
-   state->nextblock   = (uint8_t*)state_manager_raw_alloc(state_size, 1);
+   this_block         = (uint8_t*)state_manager_raw_alloc(state_size, 0);
+   next_block         = (uint8_t*)state_manager_raw_alloc(state_size, 1);
 
-   if (!state->thisblock || !state->nextblock)
+   if (!this_block || !next_block)
       goto error;
 
-   state->capacity = buffer_size;
+   state->blocksize   = block_size;
+   state->maxcompsize = max_comp_size;
+   state->data        = state_data;
+   state->thisblock   = this_block;
+   state->nextblock   = next_block;
+   state->capacity    = buffer_size;
 
-   state->head = state->data + sizeof(size_t);
-   state->tail = state->data + sizeof(size_t);
+   state->head        = state->data + sizeof(size_t);
+   state->tail        = state->data + sizeof(size_t);
 
 #if STRICT_BUF_SIZE
-   state->debugsize = state_size;
-   state->debugblock = (uint8_t*)malloc(state_size);
+   state->debugsize   = state_size;
+   state->debugblock  = (uint8_t*)malloc(state_size);
 #endif
 
    return state;
 
 error:
+   if (state_data)
+      free(state_data);
    state_manager_free(state);
+   free(state);
 
    return NULL;
 }
@@ -363,6 +496,7 @@ static bool state_manager_pop(state_manager_t *state, const void **data)
       return true;
    }
 
+   *data = state->thisblock;
    if (state->head == state->tail)
       return false;
 
@@ -376,7 +510,6 @@ static bool state_manager_pop(state_manager_t *state, const void **data)
          state->maxcompsize, out, state->blocksize);
 
    state->entries--;
-   *data = state->thisblock;
    return true;
 }
 
@@ -404,12 +537,11 @@ static void state_manager_push_where(state_manager_t *state, void **data)
 
 static void state_manager_push_do(state_manager_t *state)
 {
+   uint8_t *swap = NULL;
+
 #if STRICT_BUF_SIZE
    memcpy(state->nextblock, state->debugblock, state->debugsize);
 #endif
-
-   static struct retro_perf_counter gen_deltas = {0};
-   uint8_t *swap = NULL;
 
    if (state->thisblock_valid)
    {
@@ -433,9 +565,6 @@ recheckcapacity:;
          goto recheckcapacity;
       }
 
-      performance_counter_init(&gen_deltas, "gen_deltas");
-      performance_counter_start(&gen_deltas);
-
       oldb        = state->thisblock;
       newb        = state->nextblock;
       compressed  = state->head + sizeof(size_t);
@@ -453,8 +582,6 @@ recheckcapacity:;
       compressed += sizeof(size_t);
       write_size_t(state->head, compressed-state->data);
       state->head = compressed;
-
-      performance_counter_stop(&gen_deltas);
    }
    else
       state->thisblock_valid = true;
@@ -484,14 +611,13 @@ static void state_manager_capacity(state_manager_t *state,
 }
 #endif
 
-void state_manager_event_init(void)
+void state_manager_event_init(unsigned rewind_buffer_size)
 {
    retro_ctx_serialize_info_t serial_info;
    retro_ctx_size_info_t info;
    void *state          = NULL;
-   settings_t *settings = config_get_ptr();
 
-   if (!settings->rewind_enable || rewind_state.state)
+   if (rewind_state.state)
       return;
 
    if (audio_driver_has_callback())
@@ -513,10 +639,10 @@ void state_manager_event_init(void)
 
    RARCH_LOG("%s: %u MB\n",
          msg_hash_to_str(MSG_REWIND_INIT),
-         (unsigned)(settings->rewind_buffer_size / 1000000));
+         (unsigned)(rewind_buffer_size / 1000000));
 
    rewind_state.state = state_manager_new(rewind_state.size,
-         settings->rewind_buffer_size);
+         rewind_buffer_size);
 
    if (!rewind_state.state)
       RARCH_WARN("%s.\n", msg_hash_to_str(MSG_REWIND_INIT_FAILED));
@@ -537,15 +663,13 @@ bool state_manager_frame_is_reversed(void)
    return frame_is_reversed;
 }
 
-static void state_manager_set_frame_is_reversed(bool value)
-{
-   frame_is_reversed = value;
-}
-
 void state_manager_event_deinit(void)
 {
    if (rewind_state.state)
+   {
       state_manager_free(rewind_state.state);
+      free(rewind_state.state);
+   }
    rewind_state.state = NULL;
    rewind_state.size  = 0;
 }
@@ -556,25 +680,33 @@ void state_manager_event_deinit(void)
  *
  * Checks if rewind toggle/hold was being pressed and/or held.
  **/
-void state_manager_check_rewind(bool pressed)
+bool state_manager_check_rewind(bool pressed,
+      unsigned rewind_granularity, bool is_paused,
+      char *s, size_t len, unsigned *time)
 {
+   bool ret             = false;
    static bool first    = true;
-   settings_t *settings = config_get_ptr();
+#ifdef HAVE_NETWORKING
+   bool was_reversed    = false;
+#endif
 
-   if (state_manager_frame_is_reversed())
+   if (frame_is_reversed)
    {
+#ifdef HAVE_NETWORKING
+      was_reversed = true;
+#endif
       audio_driver_frame_is_reverse();
-      state_manager_set_frame_is_reversed(false);
+      frame_is_reversed = false;
    }
 
    if (first)
    {
       first = false;
-      return;
+      return false;
    }
 
    if (!rewind_state.state)
-      return;
+      return false;
 
    if (pressed)
    {
@@ -584,14 +716,20 @@ void state_manager_check_rewind(bool pressed)
       {
          retro_ctx_serialize_info_t serial_info;
 
-         state_manager_set_frame_is_reversed(true);
+#ifdef HAVE_NETWORKING
+         /* Make sure netplay isn't confused */
+         if (!was_reversed)
+            netplay_driver_ctl(RARCH_NETPLAY_CTL_DESYNC_PUSH, NULL);
+#endif
+
+         frame_is_reversed = true;
 
          audio_driver_setup_rewind();
 
-         runloop_msg_queue_push(
-               msg_hash_to_str(MSG_REWINDING), 0,
-               runloop_ctl(RUNLOOP_CTL_IS_PAUSED, NULL) 
-               ? 1 : 30, true);
+         strlcpy(s, msg_hash_to_str(MSG_REWINDING), len);
+
+         *time                  = is_paused ? 1 : 30;
+         ret                    = true;
 
          serial_info.data_const = buf;
          serial_info.size       = rewind_state.size;
@@ -602,38 +740,56 @@ void state_manager_check_rewind(bool pressed)
             bsv_movie_ctl(BSV_MOVIE_CTL_FRAME_REWIND, NULL);
       }
       else
-         runloop_msg_queue_push(
+      {
+         retro_ctx_serialize_info_t serial_info;
+         serial_info.data_const = buf;
+         serial_info.size       = rewind_state.size;
+         core_unserialize(&serial_info);
+
+#ifdef HAVE_NETWORKING
+         /* Tell netplay we're done */
+         if (was_reversed)
+            netplay_driver_ctl(RARCH_NETPLAY_CTL_DESYNC_POP, NULL);
+#endif
+
+         strlcpy(s, 
                msg_hash_to_str(MSG_REWIND_REACHED_END),
-               0, 30, true);
+               len);
+         
+         *time = 30;
+         ret   = true;
+      }
    }
    else
    {
       static unsigned cnt      = 0;
 
-      cnt = (cnt + 1) % (settings->rewind_granularity ?
-            settings->rewind_granularity : 1); /* Avoid possible SIGFPE. */
+#ifdef HAVE_NETWORKING
+      /* Tell netplay we're done */
+      if (was_reversed)
+         netplay_driver_ctl(RARCH_NETPLAY_CTL_DESYNC_POP, NULL);
+#endif
+
+      cnt = (cnt + 1) % (rewind_granularity ?
+            rewind_granularity : 1); /* Avoid possible SIGFPE. */
 
       if ((cnt == 0) || bsv_movie_ctl(BSV_MOVIE_CTL_IS_INITED, NULL))
       {
          retro_ctx_serialize_info_t serial_info;
-         static struct retro_perf_counter rewind_serialize = {0};
          void *state = NULL;
 
          state_manager_push_where(rewind_state.state, &state);
-
-         performance_counter_init(&rewind_serialize, "rewind_serialize");
-         performance_counter_start(&rewind_serialize);
 
          serial_info.data = state;
          serial_info.size = rewind_state.size;
 
          core_serialize(&serial_info);
 
-         performance_counter_stop(&rewind_serialize);
-
          state_manager_push_do(rewind_state.state);
       }
    }
 
    core_set_rewind_callbacks();
+
+   return ret;
 }

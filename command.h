@@ -1,6 +1,7 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
  *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2016 - Brad Parker
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -17,13 +18,14 @@
 #ifndef COMMAND_H__
 #define COMMAND_H__
 
+#include <stdint.h>
+
+#include <boolean.h>
+#include <retro_common_api.h>
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
-
-#include <stdint.h>
-#include <boolean.h>
-#include <retro_common_api.h>
 
 RETRO_BEGIN_DECLS
 
@@ -43,7 +45,6 @@ enum event_command
    CMD_EVENT_SET_PER_GAME_RESOLUTION,
    CMD_EVENT_SET_FRAME_LIMIT,
    /* Loads core. */
-   CMD_EVENT_LOAD_CORE_DEINIT,
    CMD_EVENT_LOAD_CORE,
    CMD_EVENT_LOAD_CORE_PERSIST,
    CMD_EVENT_UNLOAD_CORE,
@@ -133,6 +134,8 @@ enum event_command
    CMD_EVENT_REBOOT,
    /* Resume RetroArch when in menu. */
    CMD_EVENT_RESUME,
+   /* Add a playlist entry to favorites. */
+   CMD_EVENT_ADD_TO_FAVORITES,
    /* Toggles pause. */
    CMD_EVENT_PAUSE_TOGGLE,
    /* Pauses RetroArch. */
@@ -141,6 +144,8 @@ enum event_command
    CMD_EVENT_PAUSE,
    CMD_EVENT_PAUSE_CHECKS,
    CMD_EVENT_MENU_SAVE_CURRENT_CONFIG,
+   CMD_EVENT_MENU_SAVE_CURRENT_CONFIG_OVERRIDE_CORE,
+   CMD_EVENT_MENU_SAVE_CURRENT_CONFIG_OVERRIDE_GAME,
    CMD_EVENT_MENU_SAVE_CONFIG,
    CMD_EVENT_MENU_PAUSE_LIBRETRO,
    /* Toggles menu on/off. */
@@ -154,11 +159,6 @@ enum event_command
    CMD_EVENT_SHADER_DIR_DEINIT,
    /* Initializes controllers. */
    CMD_EVENT_CONTROLLERS_INIT,
-   CMD_EVENT_SAVEFILES,
-   /* Initializes savefiles. */
-   CMD_EVENT_SAVEFILES_INIT,
-   /* Deinitializes savefiles. */
-   CMD_EVENT_SAVEFILES_DEINIT,
    /* Initializes cheats. */
    CMD_EVENT_CHEATS_INIT,
    /* Deinitializes cheats. */
@@ -169,12 +169,18 @@ enum event_command
    CMD_EVENT_NETWORK_DEINIT,
    /* Initializes network system. */
    CMD_EVENT_NETWORK_INIT,
-   /* Initializes netplay system. */
+   /* Initializes netplay system with a string or no host specified. */
    CMD_EVENT_NETPLAY_INIT,
+   /* Initializes netplay system with a direct host specified. */
+   CMD_EVENT_NETPLAY_INIT_DIRECT,
+   /* Initializes netplay system with a direct host specified after loading content. */
+   CMD_EVENT_NETPLAY_INIT_DIRECT_DEFERRED,
    /* Deinitializes netplay system. */
    CMD_EVENT_NETPLAY_DEINIT,
    /* Flip netplay players. */
    CMD_EVENT_NETPLAY_FLIP_PLAYERS,
+   /* Switch between netplay gaming and watching. */
+   CMD_EVENT_NETPLAY_GAME_WATCH,
    /* Initializes BSV movie. */
    CMD_EVENT_BSV_MOVIE_INIT,
    /* Deinitializes BSV movie. */
@@ -187,13 +193,14 @@ enum event_command
    CMD_EVENT_REMOTE_INIT,
    /* Deinitializes remote gamepad interface. */
    CMD_EVENT_REMOTE_DEINIT,
+   /* Initializes keyboard to gamepad mapper interface. */
+   CMD_EVENT_MAPPER_INIT,
+   /* Deinitializes keyboard to gamepad mapper interface. */
+   CMD_EVENT_MAPPER_DEINIT,
    /* Reinitializes audio driver. */
    CMD_EVENT_AUDIO_REINIT,
    /* Resizes windowed scale. Will reinitialize video driver. */
    CMD_EVENT_RESIZE_WINDOWED_SCALE,
-   /* Deinitializes temporary content. */
-   CMD_EVENT_TEMPORARY_CONTENT_DEINIT,
-   CMD_EVENT_SUBSYSTEM_FULLPATHS_DEINIT,
    CMD_EVENT_LOG_FILE_DEINIT,
    /* Toggles disk eject. */
    CMD_EVENT_DISK_EJECT_TOGGLE,
@@ -207,16 +214,25 @@ enum event_command
    CMD_EVENT_RUMBLE_STOP,
    /* Toggles mouse grab. */
    CMD_EVENT_GRAB_MOUSE_TOGGLE,
+   /* Toggles game focus. */
+   CMD_EVENT_GAME_FOCUS_TOGGLE,
    /* Toggles fullscreen mode. */
    CMD_EVENT_FULLSCREEN_TOGGLE,
    CMD_EVENT_PERFCNT_REPORT_FRONTEND_LOG,
    CMD_EVENT_VOLUME_UP,
    CMD_EVENT_VOLUME_DOWN,
-   CMD_EVENT_DISABLE_OVERRIDES
+   CMD_EVENT_MIXER_VOLUME_UP,
+   CMD_EVENT_MIXER_VOLUME_DOWN,
+   CMD_EVENT_DISABLE_OVERRIDES,
+   CMD_EVENT_RESTORE_REMAPS,
+   CMD_EVENT_RESTORE_DEFAULT_SHADER_PRESET,
+   CMD_EVENT_LIBUI_TEST
 };
 
+bool command_set_shader(const char *arg);
+
 #ifdef HAVE_COMMAND
-#if defined(HAVE_NETWORK_CMD) && defined(HAVE_NETPLAY)
+#if defined(HAVE_NETWORKING) && defined(HAVE_NETWORK_CMD)
 bool command_network_send(const char *cmd_);
 #endif
 #endif
@@ -227,7 +243,7 @@ bool command_network_new(
       bool network_enable,
       uint16_t port);
 
-command_t *command_new(bool local_enable);
+command_t *command_new(void);
 
 bool command_poll(command_t *handle);
 
@@ -236,6 +252,8 @@ bool command_get(command_handle_t *handle);
 bool command_set(command_handle_t *handle);
 
 bool command_free(command_t *handle);
+
+bool command_event_quit(void);
 
 /**
  * command_event:

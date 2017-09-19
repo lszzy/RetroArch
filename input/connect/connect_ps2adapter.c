@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2013-2014 - Jason Fetters
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -72,7 +72,7 @@ static int16_t hidpad_ps2adapter_get_axis(void *data, unsigned axis)
    int val                               = 0;
    struct hidpad_ps2adapter_data *device = (struct hidpad_ps2adapter_data*)data;
 
-   if (!device || axis >= 2)
+   if (!device || axis >= 4)
       return 0;
    
    switch (axis)

@@ -1,5 +1,5 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2016 - Hans-Kristian Arntzen
+ *  Copyright (C) 2016-2017 - Hans-Kristian Arntzen
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -13,6 +13,10 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <retro_assert.h>
+#include <dynamic/dylib.h>
+#include <string/stdstring.h>
+
 #ifdef HAVE_CONFIG_H
 #include "../../config.h"
 #endif
@@ -23,11 +27,8 @@
 #endif
 #endif
 
-#include <retro_assert.h>
-#include <dynamic/dylib.h>
-
 #include "vulkan_common.h"
-#include "../../performance_counters.h"
+#include "../../configuration.h"
 
 static dylib_t vulkan_library;
 static VkInstance cached_instance;
@@ -157,7 +158,8 @@ void vulkan_copy_staging_to_dynamic(vk_t *vk, VkCommandBuffer cmd,
    retro_assert(dynamic->type == VULKAN_TEXTURE_DYNAMIC);
    retro_assert(staging->type == VULKAN_TEXTURE_STAGING);
 
-   vulkan_transition_texture(vk, staging);
+   vulkan_sync_texture_to_gpu(vk, staging);
+   vulkan_transition_texture(vk, cmd, staging);
 
    /* We don't have to sync against previous TRANSFER, 
     * since we observed the completion by fences. 
@@ -168,7 +170,7 @@ void vulkan_copy_staging_to_dynamic(vk_t *vk, VkCommandBuffer cmd,
     * We would also need to optionally maintain extra textures due to 
     * changes in resolution, so this seems like the sanest and 
     * simplest solution. */
-   vulkan_image_layout_transition(vk, vk->cmd, dynamic->image,
+   vulkan_image_layout_transition(vk, cmd, dynamic->image,
          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          0, VK_ACCESS_TRANSFER_WRITE_BIT,
          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -182,12 +184,12 @@ void vulkan_copy_staging_to_dynamic(vk_t *vk, VkCommandBuffer cmd,
    region.srcSubresource.layerCount = 1;
    region.dstSubresource = region.srcSubresource;
 
-   vkCmdCopyImage(vk->cmd,
+   vkCmdCopyImage(cmd,
          staging->image, VK_IMAGE_LAYOUT_GENERAL,
          dynamic->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          1, &region);
 
-   vulkan_image_layout_transition(vk, vk->cmd,
+   vulkan_image_layout_transition(vk, cmd,
          dynamic->image,
          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -240,6 +242,42 @@ static void vulkan_track_dealloc(VkImage image)
 }
 #endif
 
+void vulkan_sync_texture_to_gpu(vk_t *vk, const struct vk_texture *tex)
+{
+   VkMappedMemoryRange range = { VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE };
+   if (!tex || !tex->need_manual_cache_management || tex->memory == VK_NULL_HANDLE)
+      return;
+
+   range.memory = tex->memory;
+   range.offset = 0;
+   range.size = VK_WHOLE_SIZE;
+   vkFlushMappedMemoryRanges(vk->context->device, 1, &range);
+}
+
+void vulkan_sync_texture_to_cpu(vk_t *vk, const struct vk_texture *tex)
+{
+   VkMappedMemoryRange range = { VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE };
+   if (!tex || !tex->need_manual_cache_management || tex->memory == VK_NULL_HANDLE)
+      return;
+
+   range.memory = tex->memory;
+   range.offset = 0;
+   range.size = VK_WHOLE_SIZE;
+   vkInvalidateMappedMemoryRanges(vk->context->device, 1, &range);
+}
+
+static unsigned vulkan_num_miplevels(unsigned width, unsigned height)
+{
+   unsigned size = MAX(width, height);
+   unsigned levels = 0;
+   while (size)
+   {
+      levels++;
+      size >>= 1;
+   }
+   return levels;
+}
+
 struct vk_texture vulkan_create_texture(vk_t *vk,
       struct vk_texture *old,
       unsigned width, unsigned height,
@@ -248,6 +286,7 @@ struct vk_texture vulkan_create_texture(vk_t *vk,
       const VkComponentMapping *swizzle,
       enum vk_texture_type type)
 {
+   unsigned i;
    struct vk_texture tex;
    VkMemoryRequirements mem_reqs;
    VkSubresourceLayout layout;
@@ -267,9 +306,20 @@ struct vk_texture vulkan_create_texture(vk_t *vk,
    info.extent.width  = width;
    info.extent.height = height;
    info.extent.depth  = 1;
-   info.mipLevels     = 1;
    info.arrayLayers   = 1;
-   info.samples = VK_SAMPLE_COUNT_1_BIT;
+
+   /* For simplicity, always build mipmaps for
+    * static textures, samplers can be used to enable it dynamically.
+    */
+   if (type == VULKAN_TEXTURE_STATIC)
+   {
+      info.mipLevels  = vulkan_num_miplevels(width, height);
+      tex.mipmap      = true;
+   }
+   else
+      info.mipLevels  = 1;
+
+   info.samples       = VK_SAMPLE_COUNT_1_BIT;
 
    if (type == VULKAN_TEXTURE_STREAMED)
    {
@@ -292,19 +342,24 @@ struct vk_texture vulkan_create_texture(vk_t *vk,
       case VULKAN_TEXTURE_STATIC:
          retro_assert(initial && "Static textures must have initial data.\n");
          info.tiling        = VK_IMAGE_TILING_OPTIMAL;
-         info.usage         = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+         info.usage         = VK_IMAGE_USAGE_SAMPLED_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
          info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
          break;
 
       case VULKAN_TEXTURE_DYNAMIC:
          retro_assert(!initial && "Dynamic textures must not have initial data.\n");
          info.tiling        = VK_IMAGE_TILING_OPTIMAL;
-         info.usage         = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+         info.usage         = VK_IMAGE_USAGE_SAMPLED_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
          info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
          break;
 
       case VULKAN_TEXTURE_STREAMED:
-         info.usage         = VK_IMAGE_USAGE_SAMPLED_BIT;
+         info.usage         = VK_IMAGE_USAGE_SAMPLED_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
          info.tiling        = VK_IMAGE_TILING_LINEAR;
          info.initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED;
          break;
@@ -340,14 +395,18 @@ struct vk_texture vulkan_create_texture(vk_t *vk,
          break;
 
       default:
+         /* Try to find a memory type which is cached, even if it means manual cache management. */
          alloc.memoryTypeIndex = vulkan_find_memory_type_fallback(
                &vk->context->memory_properties,
                mem_reqs.memoryTypeBits,
                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+         tex.need_manual_cache_management =
+            (vk->context->memory_properties.memoryTypes[alloc.memoryTypeIndex].propertyFlags &
+             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0;
          break;
    }
 
@@ -368,7 +427,8 @@ struct vk_texture vulkan_create_texture(vk_t *vk,
       vkGetImageMemoryRequirements(device, tex.image, &mem_reqs);
 
       alloc.allocationSize  = mem_reqs.size;
-      alloc.memoryTypeIndex = vulkan_find_memory_type_fallback(&vk->context->memory_properties,
+      alloc.memoryTypeIndex = vulkan_find_memory_type_fallback(
+            &vk->context->memory_properties,
             mem_reqs.memoryTypeBits,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
@@ -433,7 +493,7 @@ struct vk_texture vulkan_create_texture(vk_t *vk,
          view.components.a             = VK_COMPONENT_SWIZZLE_A;
       }
       view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-      view.subresourceRange.levelCount = 1;
+      view.subresourceRange.levelCount = info.mipLevels;
       view.subresourceRange.layerCount = 1;
 
       vkCreateImageView(device, &view, NULL, &tex.view);
@@ -441,7 +501,11 @@ struct vk_texture vulkan_create_texture(vk_t *vk,
    else
       tex.view = VK_NULL_HANDLE;
 
-   vkGetImageSubresourceLayout(device, tex.image, &subresource, &layout);
+   if (info.tiling == VK_IMAGE_TILING_LINEAR)
+      vkGetImageSubresourceLayout(device, tex.image, &subresource, &layout);
+   else
+      memset(&layout, 0, sizeof(layout));
+
    tex.stride = layout.rowPitch;
    tex.offset = layout.offset;
    tex.size   = layout.size;
@@ -450,7 +514,7 @@ struct vk_texture vulkan_create_texture(vk_t *vk,
    tex.width  = width;
    tex.height = height;
    tex.format = format;
-   tex.type = type;
+   tex.type   = type;
 
    if (initial && (type == VULKAN_TEXTURE_STREAMED || type == VULKAN_TEXTURE_STAGING))
    {
@@ -468,21 +532,23 @@ struct vk_texture vulkan_create_texture(vk_t *vk,
       for (y = 0; y < tex.height; y++, dst += tex.stride, src += stride)
          memcpy(dst, src, width * bpp);
 
+      vulkan_sync_texture_to_gpu(vk, &tex);
       vkUnmapMemory(device, tex.memory);
    }
    else if (initial && type == VULKAN_TEXTURE_STATIC)
    {
       VkImageCopy region;
       VkCommandBuffer staging;
-      struct vk_texture tmp = vulkan_create_texture(vk, NULL,
+      struct vk_texture tmp       = vulkan_create_texture(vk, NULL,
             width, height, format, initial, NULL, VULKAN_TEXTURE_STAGING);
 
       cmd_info.commandPool        = vk->staging_pool;
       cmd_info.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
       cmd_info.commandBufferCount = 1;
+
       vkAllocateCommandBuffers(vk->context->device, &cmd_info, &staging);
 
-      begin_info.flags        = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+      begin_info.flags            = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
       vkBeginCommandBuffer(staging, &begin_info);
 
@@ -492,8 +558,15 @@ struct vk_texture vulkan_create_texture(vk_t *vk,
             VK_PIPELINE_STAGE_HOST_BIT,
             VK_PIPELINE_STAGE_TRANSFER_BIT);
 
-      vulkan_image_layout_transition(vk, staging, tex.image,
-            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      /* If doing mipmapping on upload, keep in general so we can easily do transfers to
+       * and transfers from the images without having to
+       * mess around with lots of extra transitions at per-level granularity.
+       */
+      vulkan_image_layout_transition(vk,
+            staging,
+            tex.image,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            tex.mipmap ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             0, VK_ACCESS_TRANSFER_WRITE_BIT,
             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
             VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -507,17 +580,71 @@ struct vk_texture vulkan_create_texture(vk_t *vk,
       region.dstSubresource            = region.srcSubresource;
 
       vkCmdCopyImage(staging,
-            tmp.image, VK_IMAGE_LAYOUT_GENERAL,
-            tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            tmp.image,
+            VK_IMAGE_LAYOUT_GENERAL,
+            tex.image,
+            tex.mipmap ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             1, &region);
 
-      vulkan_image_layout_transition(vk, staging, tex.image,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_ACCESS_TRANSFER_WRITE_BIT,
-            VK_ACCESS_SHADER_READ_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+      if (tex.mipmap)
+      {
+         for (i = 1; i < info.mipLevels; i++)
+         {
+            VkImageBlit blit_region;
+            unsigned src_width                        = MAX(width >> (i - 1), 1);
+            unsigned src_height                       = MAX(height >> (i - 1), 1);
+            unsigned target_width                     = MAX(width >> i, 1);
+            unsigned target_height                    = MAX(height >> i, 1);
+            memset(&blit_region, 0, sizeof(blit_region));
+
+            blit_region.srcSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+            blit_region.srcSubresource.mipLevel       = i - 1;
+            blit_region.srcSubresource.baseArrayLayer = 0;
+            blit_region.srcSubresource.layerCount     = 1;
+            blit_region.dstSubresource                = blit_region.srcSubresource;
+            blit_region.dstSubresource.mipLevel       = i;
+            blit_region.srcOffsets[1].x               = src_width;
+            blit_region.srcOffsets[1].y               = src_height;
+            blit_region.srcOffsets[1].z               = 1;
+            blit_region.dstOffsets[1].x               = target_width;
+            blit_region.dstOffsets[1].y               = target_height;
+            blit_region.dstOffsets[1].z               = 1;
+
+            /* Only injects execution and memory barriers,
+             * not actual transition. */
+            vulkan_image_layout_transition(vk, staging, tex.image,
+                  VK_IMAGE_LAYOUT_GENERAL,
+                  VK_IMAGE_LAYOUT_GENERAL,
+                  VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_ACCESS_TRANSFER_READ_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT);
+
+            vkCmdBlitImage(staging,
+                  tex.image, VK_IMAGE_LAYOUT_GENERAL,
+                  tex.image, VK_IMAGE_LAYOUT_GENERAL,
+                  1, &blit_region, VK_FILTER_LINEAR);
+         }
+
+         /* Complete our texture. */
+         vulkan_image_layout_transition(vk, staging, tex.image,
+               VK_IMAGE_LAYOUT_GENERAL,
+               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+               VK_ACCESS_TRANSFER_WRITE_BIT,
+               VK_ACCESS_SHADER_READ_BIT,
+               VK_PIPELINE_STAGE_TRANSFER_BIT,
+               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+      }
+      else
+      {
+         vulkan_image_layout_transition(vk, staging, tex.image,
+               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+               VK_ACCESS_TRANSFER_WRITE_BIT,
+               VK_ACCESS_SHADER_READ_BIT,
+               VK_PIPELINE_STAGE_TRANSFER_BIT,
+               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+      }
 
       vkEndCommandBuffer(staging);
       submit_info.commandBufferCount = 1;
@@ -537,7 +664,8 @@ struct vk_texture vulkan_create_texture(vk_t *vk,
       slock_unlock(vk->context->queue_lock);
 #endif
 
-      vkFreeCommandBuffers(vk->context->device, vk->staging_pool, 1, &staging);
+      vkFreeCommandBuffers(vk->context->device,
+            vk->staging_pool, 1, &staging);
       vulkan_destroy_texture(
             vk->context->device, &tmp);
       tex.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -601,7 +729,7 @@ static void vulkan_write_quad_descriptors(
    }
 }
 
-void vulkan_transition_texture(vk_t *vk, struct vk_texture *texture)
+void vulkan_transition_texture(vk_t *vk, VkCommandBuffer cmd, struct vk_texture *texture)
 {
    /* Transition to GENERAL layout for linear streamed textures.
     * We're using linear textures here, so only 
@@ -616,7 +744,7 @@ void vulkan_transition_texture(vk_t *vk, struct vk_texture *texture)
    switch (texture->type)
    {
       case VULKAN_TEXTURE_STREAMED:
-         vulkan_image_layout_transition(vk, vk->cmd, texture->image,
+         vulkan_image_layout_transition(vk, cmd, texture->image,
                texture->layout, VK_IMAGE_LAYOUT_GENERAL,
                VK_ACCESS_HOST_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                VK_PIPELINE_STAGE_HOST_BIT,
@@ -624,7 +752,7 @@ void vulkan_transition_texture(vk_t *vk, struct vk_texture *texture)
          break;
 
       case VULKAN_TEXTURE_STAGING:
-         vulkan_image_layout_transition(vk, vk->cmd, texture->image,
+         vulkan_image_layout_transition(vk, cmd, texture->image,
                texture->layout, VK_IMAGE_LAYOUT_GENERAL,
                VK_ACCESS_HOST_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
                VK_PIPELINE_STAGE_HOST_BIT,
@@ -644,9 +772,12 @@ static void vulkan_check_dynamic_state(
 
    if (vk->tracker.dirty & VULKAN_DIRTY_DYNAMIC_BIT)
    {
-      const VkRect2D sci = {
-         { vk->vp.x, vk->vp.y },
-         { vk->vp.width, vk->vp.height }};
+      VkRect2D sci;
+      
+      sci.offset.x      = vk->vp.x;
+      sci.offset.y      = vk->vp.y;
+      sci.extent.width  = vk->vp.width;
+      sci.extent.height = vk->vp.height;
 
       vkCmdSetViewport(vk->cmd, 0, 1, &vk->vk_vp);
       vkCmdSetScissor (vk->cmd, 0, 1, &sci);
@@ -658,7 +789,7 @@ static void vulkan_check_dynamic_state(
 void vulkan_draw_triangles(vk_t *vk, const struct vk_draw_triangles *call)
 {
    if (call->texture)
-      vulkan_transition_texture(vk, call->texture);
+      vulkan_transition_texture(vk, vk->cmd, call->texture);
 
    if (call->pipeline != vk->tracker.pipeline)
    {
@@ -716,7 +847,7 @@ void vulkan_draw_triangles(vk_t *vk, const struct vk_draw_triangles *call)
 
 void vulkan_draw_quad(vk_t *vk, const struct vk_draw_quad *quad)
 {
-   vulkan_transition_texture(vk, quad->texture);
+   vulkan_transition_texture(vk, vk->cmd, quad->texture);
 
    if (quad->pipeline != vk->tracker.pipeline)
    {
@@ -739,7 +870,9 @@ void vulkan_draw_quad(vk_t *vk, const struct vk_draw_quad *quad)
                sizeof(*quad->mvp), &range))
          return;
 
-      if (memcmp(quad->mvp, &vk->tracker.mvp, sizeof(*quad->mvp)) 
+      if (
+               string_is_equal_fast(quad->mvp,
+                  &vk->tracker.mvp, sizeof(*quad->mvp)) 
             || quad->texture->view != vk->tracker.view
             || quad->sampler != vk->tracker.sampler)
       {
@@ -1014,8 +1147,15 @@ struct vk_buffer_chain vulkan_buffer_chain_init(
       VkDeviceSize alignment,
       VkBufferUsageFlags usage)
 {
-   struct vk_buffer_chain chain = { 
-      block_size, alignment, 0, usage, NULL, NULL };
+   struct vk_buffer_chain chain;
+   
+   chain.block_size = block_size;
+   chain.alignment  = alignment;
+   chain.offset     = 0;
+   chain.usage      = usage;
+   chain.head       = NULL;
+   chain.current    = NULL;
+
    return chain;
 }
 
@@ -1121,7 +1261,7 @@ static bool vulkan_find_extensions(const char **exts, unsigned num_exts,
       found = false;
       for (i = 0; i < property_count; i++)
       {
-         if (!strcmp(exts[ext], properties[i].extensionName))
+         if (string_is_equal(exts[ext], properties[i].extensionName))
          {
             found = true;
             break;
@@ -1136,9 +1276,9 @@ static bool vulkan_find_extensions(const char **exts, unsigned num_exts,
 
 static bool vulkan_find_instance_extensions(const char **exts, unsigned num_exts)
 {
-   bool ret = true;
-   VkExtensionProperties *properties = NULL;
    uint32_t property_count;
+   bool ret                          = true;
+   VkExtensionProperties *properties = NULL;
 
    if (vkEnumerateInstanceExtensionProperties(NULL, &property_count, NULL) != VK_SUCCESS)
       return false;
@@ -1202,20 +1342,59 @@ end:
    return ret;
 }
 
+static bool vulkan_context_init_gpu(gfx_ctx_vulkan_data_t *vk)
+{
+   uint32_t gpu_count     = 0;
+   VkPhysicalDevice *gpus = NULL;
+
+   if (vk->context.gpu != VK_NULL_HANDLE)
+      return true;
+
+   if (vkEnumeratePhysicalDevices(vk->context.instance,
+            &gpu_count, NULL) != VK_SUCCESS)
+   {
+      RARCH_ERR("[Vulkan]: Failed to enumerate physical devices.\n");
+      return false;
+   }
+
+   gpus = (VkPhysicalDevice*)calloc(gpu_count, sizeof(*gpus));
+   if (!gpus)
+   {
+      RARCH_ERR("[Vulkan]: Failed to enumerate physical devices.\n");
+      return false;
+   }
+
+   if (vkEnumeratePhysicalDevices(vk->context.instance,
+            &gpu_count, gpus) != VK_SUCCESS)
+   {
+      RARCH_ERR("[Vulkan]: Failed to enumerate physical devices.\n");
+      return false;
+   }
+
+   if (gpu_count < 1)
+   {
+      RARCH_ERR("[Vulkan]: Failed to enumerate Vulkan physical device.\n");
+      free(gpus);
+      return false;
+   }
+
+   vk->context.gpu = gpus[0];
+   free(gpus);
+   return true;
+}
+
 static bool vulkan_context_init_device(gfx_ctx_vulkan_data_t *vk)
 {
    bool use_device_ext;
+   uint32_t queue_count;
+   VkResult res;
+   unsigned i;
    static const float one             = 1.0f;
-   uint32_t gpu_count                 = 1;
    bool found_queue                   = false;
-   VkPhysicalDevice *gpus             = NULL;
 
    VkPhysicalDeviceFeatures features  = { false };
    VkDeviceQueueCreateInfo queue_info = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
    VkDeviceCreateInfo device_info     = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
-   uint32_t queue_count;
-   VkResult res;
-   unsigned i;
 
    static const char *device_extensions[] = {
       "VK_KHR_swapchain",
@@ -1246,7 +1425,7 @@ static bool vulkan_context_init_device(gfx_ctx_vulkan_data_t *vk)
       const VkPhysicalDeviceFeatures features = { 0 };
 
       bool ret = iface->create_device(&context, vk->context.instance,
-            VK_NULL_HANDLE,
+            vk->context.gpu,
             vk->vk_surface,
             vulkan_symbol_wrapper_instance_proc_addr(),
             device_extensions,
@@ -1287,44 +1466,15 @@ static bool vulkan_context_init_device(gfx_ctx_vulkan_data_t *vk)
       cached_destroy_device = NULL;
    }
 
-   if (vk->context.gpu == VK_NULL_HANDLE)
-   {
-      if (vkEnumeratePhysicalDevices(vk->context.instance,
-               &gpu_count, NULL) != VK_SUCCESS)
-      {
-         RARCH_ERR("[Vulkan]: Failed to enumerate physical devices.\n");
-         return false;
-      }
-
-      gpus = (VkPhysicalDevice*)calloc(gpu_count, sizeof(*gpus));
-      if (!gpus)
-      {
-         RARCH_ERR("[Vulkan]: Failed to enumerate physical devices.\n");
-         return false;
-      }
-
-      if (vkEnumeratePhysicalDevices(vk->context.instance,
-               &gpu_count, gpus) != VK_SUCCESS)
-      {
-         RARCH_ERR("[Vulkan]: Failed to enumerate physical devices.\n");
-         return false;
-      }
-
-      if (gpu_count < 1)
-      {
-         RARCH_ERR("[Vulkan]: Failed to enumerate Vulkan physical device.\n");
-         free(gpus);
-         return false;
-      }
-
-      vk->context.gpu = gpus[0];
-      free(gpus);
-   }
+   if (!vulkan_context_init_gpu(vk))
+      return false;
 
    vkGetPhysicalDeviceProperties(vk->context.gpu,
          &vk->context.gpu_properties);
    vkGetPhysicalDeviceMemoryProperties(vk->context.gpu,
          &vk->context.memory_properties);
+
+   RARCH_LOG("[Vulkan]: Using GPU: %s\n", vk->context.gpu_properties.deviceName);
 
    if (vk->context.device == VK_NULL_HANDLE)
    {
@@ -1347,12 +1497,13 @@ static bool vulkan_context_init_device(gfx_ctx_vulkan_data_t *vk)
 
       for (i = 0; i < queue_count; i++)
       {
+         VkQueueFlags required;
          VkBool32 supported = VK_FALSE;
          vkGetPhysicalDeviceSurfaceSupportKHR(
                vk->context.gpu, i,
                vk->vk_surface, &supported);
 
-         VkQueueFlags required = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
+         required = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
          if (supported && ((queue_properties[i].queueFlags & required) == required))
          {
             vk->context.graphics_queue_index = i;
@@ -1433,14 +1584,16 @@ bool vulkan_context_init(gfx_ctx_vulkan_data_t *vk,
 {
    unsigned i;
    VkResult res;
+   PFN_vkGetInstanceProcAddr GetInstanceProcAddr;
    VkInstanceCreateInfo info          = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
    VkApplicationInfo app              = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
+
+   const char *instance_extensions[4];
+   unsigned ext_count = 0;
+
 #ifdef VULKAN_DEBUG
-   const char *instance_extensions[3];
-   instance_extensions[2] = "VK_EXT_debug_report";
+   instance_extensions[ext_count++] = "VK_EXT_debug_report";
    static const char *instance_layers[] = { "VK_LAYER_LUNARG_standard_validation" };
-#else
-   const char *instance_extensions[2];
 #endif
 
    bool use_instance_ext;
@@ -1459,31 +1612,33 @@ bool vulkan_context_init(gfx_ctx_vulkan_data_t *vk,
       iface = NULL;
    }
 
-   instance_extensions[0] = "VK_KHR_surface";
+   instance_extensions[ext_count++] = "VK_KHR_surface";
 
    switch (type)
    {
       case VULKAN_WSI_WAYLAND:
-         instance_extensions[1] = "VK_KHR_wayland_surface";
+         instance_extensions[ext_count++] = "VK_KHR_wayland_surface";
          break;
       case VULKAN_WSI_ANDROID:
-         instance_extensions[1] = "VK_KHR_android_surface";
+         instance_extensions[ext_count++] = "VK_KHR_android_surface";
          break;
       case VULKAN_WSI_WIN32:
-         instance_extensions[1] = "VK_KHR_win32_surface";
+         instance_extensions[ext_count++] = "VK_KHR_win32_surface";
          break;
       case VULKAN_WSI_XLIB:
-         instance_extensions[1] = "VK_KHR_xlib_surface";
+         instance_extensions[ext_count++] = "VK_KHR_xlib_surface";
          break;
       case VULKAN_WSI_XCB:
-         instance_extensions[1] = "VK_KHR_xcb_surface";
+         instance_extensions[ext_count++] = "VK_KHR_xcb_surface";
          break;
       case VULKAN_WSI_MIR:
-         instance_extensions[1] = "VK_KHR_mir_surface";
+         instance_extensions[ext_count++] = "VK_KHR_mir_surface";
+         break;
+      case VULKAN_WSI_DISPLAY:
+         instance_extensions[ext_count++] = "VK_KHR_display";
          break;
       case VULKAN_WSI_NONE:
       default:
-         instance_extensions[1] = NULL;
          break;
    }
 
@@ -1504,7 +1659,7 @@ bool vulkan_context_init(gfx_ctx_vulkan_data_t *vk,
 
    RARCH_LOG("Vulkan dynamic library loaded.\n");
    
-   PFN_vkGetInstanceProcAddr GetInstanceProcAddr =
+   GetInstanceProcAddr =
       (PFN_vkGetInstanceProcAddr)dylib_proc(vulkan_library, "vkGetInstanceProcAddr");
 
    if (!GetInstanceProcAddr)
@@ -1521,7 +1676,7 @@ bool vulkan_context_init(gfx_ctx_vulkan_data_t *vk,
       return false;
    }
 
-   use_instance_ext = vulkan_find_instance_extensions(instance_extensions, ARRAY_SIZE(instance_extensions));
+   use_instance_ext = vulkan_find_instance_extensions(instance_extensions, ext_count);
 
    app.pApplicationName              = "RetroArch";
    app.applicationVersion            = 0;
@@ -1530,7 +1685,7 @@ bool vulkan_context_init(gfx_ctx_vulkan_data_t *vk,
    app.apiVersion                    = VK_MAKE_VERSION(1, 0, 18);
 
    info.pApplicationInfo             = &app;
-   info.enabledExtensionCount        = use_instance_ext ? ARRAY_SIZE(instance_extensions) : 0;
+   info.enabledExtensionCount        = use_instance_ext ? ext_count : 0;
    info.ppEnabledExtensionNames      = use_instance_ext ? instance_extensions : NULL;
 #ifdef VULKAN_DEBUG
    info.enabledLayerCount            = ARRAY_SIZE(instance_layers);
@@ -1582,6 +1737,7 @@ bool vulkan_context_init(gfx_ctx_vulkan_data_t *vk,
       info.pfnCallback = vulkan_debug_cb;
       vkCreateDebugReportCallbackEXT(vk->context.instance, &info, NULL, &vk->context.debug_callback);
    }
+   RARCH_LOG("[Vulkan]: Enabling Vulkan debug layers.\n");
 #endif
 
    /* Try different API versions if driver has compatible
@@ -1606,6 +1762,214 @@ bool vulkan_context_init(gfx_ctx_vulkan_data_t *vk,
    }
 
    return true;
+}
+
+static bool vulkan_update_display_mode(
+      unsigned *width,
+      unsigned *height,
+      const VkDisplayModePropertiesKHR *mode,
+      const struct vulkan_display_surface_info *info)
+{
+   unsigned visible_width = mode->parameters.visibleRegion.width;
+   unsigned visible_height = mode->parameters.visibleRegion.height;
+
+   if (!info->width || !info->height)
+   {
+      /* Strategy here is to pick something which is largest resolution. */
+      unsigned area = visible_width * visible_height;
+      if (area > (*width) * (*height))
+      {
+         *width = visible_width;
+         *height = visible_height;
+         return true;
+      }
+      else
+         return false;
+   }
+   else
+   {
+      /* For particular resolutions, find the closest. */
+      int delta_x = (int)info->width - (int)visible_width;
+      int delta_y = (int)info->height - (int)visible_height;
+      int old_delta_x = (int)info->width - (int)*width;
+      int old_delta_y = (int)info->height - (int)*height;
+
+      int dist = delta_x * delta_x + delta_y * delta_y;
+      int old_dist = old_delta_x * old_delta_x + old_delta_y * old_delta_y;
+      if (dist < old_dist)
+      {
+         *width = visible_width;
+         *height = visible_height;
+         return true;
+      }
+      else
+         return false;
+   }
+}
+
+static bool vulkan_create_display_surface(gfx_ctx_vulkan_data_t *vk,
+      unsigned *width, unsigned *height,
+      const struct vulkan_display_surface_info *info)
+{
+   bool ret = true;
+   uint32_t display_count = 0;
+   uint32_t plane_count = 0;
+   VkDisplayPropertiesKHR *displays = NULL;
+   VkDisplayPlanePropertiesKHR *planes = NULL;
+   uint32_t mode_count = 0;
+   VkDisplayModePropertiesKHR *modes = NULL;
+   unsigned dpy, i, j;
+   uint32_t best_plane = UINT32_MAX;
+   VkDisplayPlaneAlphaFlagBitsKHR alpha_mode = VK_DISPLAY_PLANE_ALPHA_OPAQUE_BIT_KHR;
+   VkDisplaySurfaceCreateInfoKHR create_info = { VK_STRUCTURE_TYPE_DISPLAY_SURFACE_CREATE_INFO_KHR };
+   VkDisplayModeKHR best_mode = VK_NULL_HANDLE;
+
+   /* We need to decide on GPU here to be able to query support. */
+   if (!vulkan_context_init_gpu(vk))
+      return false;
+
+   VULKAN_SYMBOL_WRAPPER_LOAD_INSTANCE_EXTENSION_SYMBOL(vk->context.instance,
+         vkGetPhysicalDeviceDisplayPropertiesKHR);
+   VULKAN_SYMBOL_WRAPPER_LOAD_INSTANCE_EXTENSION_SYMBOL(vk->context.instance,
+         vkGetPhysicalDeviceDisplayPlanePropertiesKHR);
+   VULKAN_SYMBOL_WRAPPER_LOAD_INSTANCE_EXTENSION_SYMBOL(vk->context.instance,
+         vkGetDisplayPlaneSupportedDisplaysKHR);
+   VULKAN_SYMBOL_WRAPPER_LOAD_INSTANCE_EXTENSION_SYMBOL(vk->context.instance,
+         vkGetDisplayModePropertiesKHR);
+   VULKAN_SYMBOL_WRAPPER_LOAD_INSTANCE_EXTENSION_SYMBOL(vk->context.instance,
+         vkCreateDisplayModeKHR);
+   VULKAN_SYMBOL_WRAPPER_LOAD_INSTANCE_EXTENSION_SYMBOL(vk->context.instance,
+         vkGetDisplayPlaneCapabilitiesKHR);
+   VULKAN_SYMBOL_WRAPPER_LOAD_INSTANCE_EXTENSION_SYMBOL(vk->context.instance,
+         vkCreateDisplayPlaneSurfaceKHR);
+
+#define GOTO_FAIL() do { \
+   ret = false; \
+   goto end; \
+} while(0)
+
+   if (vkGetPhysicalDeviceDisplayPropertiesKHR(vk->context.gpu, &display_count, NULL) != VK_SUCCESS)
+      GOTO_FAIL();
+   displays = (VkDisplayPropertiesKHR*)calloc(display_count, sizeof(*displays));
+   if (!displays)
+      GOTO_FAIL();
+   if (vkGetPhysicalDeviceDisplayPropertiesKHR(vk->context.gpu, &display_count, displays) != VK_SUCCESS)
+      GOTO_FAIL();
+
+   if (vkGetPhysicalDeviceDisplayPlanePropertiesKHR(vk->context.gpu, &plane_count, NULL) != VK_SUCCESS)
+      GOTO_FAIL();
+   planes = (VkDisplayPlanePropertiesKHR*)calloc(plane_count, sizeof(*planes));
+   if (!planes)
+      GOTO_FAIL();
+   if (vkGetPhysicalDeviceDisplayPlanePropertiesKHR(vk->context.gpu, &plane_count, planes) != VK_SUCCESS)
+      GOTO_FAIL();
+
+   for (dpy = 0; dpy < display_count; dpy++)
+   {
+      VkDisplayKHR display = displays[dpy].display;
+      best_mode = VK_NULL_HANDLE;
+      best_plane = UINT32_MAX;
+
+      if (vkGetDisplayModePropertiesKHR(vk->context.gpu,
+            display, &mode_count, NULL) != VK_SUCCESS)
+         GOTO_FAIL();
+
+      modes = (VkDisplayModePropertiesKHR*)calloc(mode_count, sizeof(*modes));
+      if (!modes)
+         GOTO_FAIL();
+
+      if (vkGetDisplayModePropertiesKHR(vk->context.gpu,
+            display, &mode_count, modes) != VK_SUCCESS)
+         GOTO_FAIL();
+
+      for (i = 0; i < mode_count; i++)
+      {
+         const VkDisplayModePropertiesKHR *mode = &modes[i];
+         if (vulkan_update_display_mode(width, height, mode, info))
+            best_mode = modes[i].displayMode;
+      }
+
+      free(modes);
+      modes = NULL;
+      mode_count = 0;
+
+      if (best_mode == VK_NULL_HANDLE)
+         continue;
+
+      for (i = 0; i < plane_count; i++)
+      {
+         uint32_t supported_count = 0;
+         VkDisplayKHR *supported = NULL;
+         VkDisplayPlaneCapabilitiesKHR plane_caps;
+         vkGetDisplayPlaneSupportedDisplaysKHR(vk->context.gpu, i, &supported_count, NULL);
+         if (!supported_count)
+            continue;
+
+         supported = (VkDisplayKHR*)calloc(supported_count, sizeof(*supported));
+         if (!supported)
+            GOTO_FAIL();
+
+         vkGetDisplayPlaneSupportedDisplaysKHR(vk->context.gpu, i, &supported_count,
+               supported);
+
+         for (j = 0; j < supported_count; j++)
+         {
+            if (supported[j] == display)
+            {
+               if (best_plane == UINT32_MAX)
+                  best_plane = j;
+               break;
+            }
+         }
+
+         free(supported);
+         supported = NULL;
+
+         if (j == supported_count)
+            continue;
+
+         if (planes[i].currentDisplay == VK_NULL_HANDLE ||
+             planes[i].currentDisplay == display)
+            best_plane = j;
+         else
+            continue;
+
+         vkGetDisplayPlaneCapabilitiesKHR(vk->context.gpu,
+               best_mode, i, &plane_caps);
+
+         if (plane_caps.supportedAlpha & VK_DISPLAY_PLANE_ALPHA_OPAQUE_BIT_KHR)
+         {
+            best_plane = j;
+            alpha_mode = VK_DISPLAY_PLANE_ALPHA_OPAQUE_BIT_KHR;
+            goto out;
+         }
+      }
+   }
+out:
+
+   if (best_mode == VK_NULL_HANDLE)
+      GOTO_FAIL();
+   if (best_plane == UINT32_MAX)
+      GOTO_FAIL();
+
+   create_info.displayMode = best_mode;
+   create_info.planeIndex = best_plane;
+   create_info.planeStackIndex = planes[best_plane].currentStackIndex;
+   create_info.transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+   create_info.globalAlpha = 1.0f;
+   create_info.alphaMode = alpha_mode;
+   create_info.imageExtent.width = *width;
+   create_info.imageExtent.height = *height;
+
+   if (vkCreateDisplayPlaneSurfaceKHR(vk->context.instance,
+            &create_info, NULL, &vk->vk_surface) != VK_SUCCESS)
+      GOTO_FAIL();
+
+end:
+   free(displays);
+   free(planes);
+   free(modes);
+   return ret;
 }
 
 bool vulkan_surface_create(gfx_ctx_vulkan_data_t *vk,
@@ -1666,10 +2030,11 @@ bool vulkan_surface_create(gfx_ctx_vulkan_data_t *vk,
       case VULKAN_WSI_WIN32:
 #ifdef _WIN32
          {
+            VkWin32SurfaceCreateInfoKHR surf_info;
             PFN_vkCreateWin32SurfaceKHR create;
+
             if (!VULKAN_SYMBOL_WRAPPER_LOAD_INSTANCE_SYMBOL(vk->context.instance, "vkCreateWin32SurfaceKHR", create))
                return false;
-            VkWin32SurfaceCreateInfoKHR surf_info;
 
             memset(&surf_info, 0, sizeof(surf_info));
 
@@ -1750,6 +2115,14 @@ bool vulkan_surface_create(gfx_ctx_vulkan_data_t *vk,
                return false;
          }
 #endif
+         break;
+      case VULKAN_WSI_DISPLAY:
+         {
+            if (!vulkan_create_display_surface(vk,
+                     &width, &height,
+                     (const struct vulkan_display_surface_info*)display))
+               return false;
+         }
          break;
       case VULKAN_WSI_NONE:
       default:
@@ -1884,12 +2257,7 @@ void vulkan_acquire_next_image(gfx_ctx_vulkan_data_t *vk)
 
    if (*next_fence != VK_NULL_HANDLE)
    {
-      static struct retro_perf_counter fence_wait = {0};
-
-      performance_counter_init(&fence_wait, "fence_wait");
-      performance_counter_start(&fence_wait);
       vkWaitForFences(vk->context.device, 1, next_fence, true, UINT64_MAX);
-      performance_counter_stop(&fence_wait);
 
       vkResetFences(vk->context.device, 1, next_fence);
    }
@@ -1911,7 +2279,6 @@ bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
    uint32_t format_count;
    uint32_t present_mode_count;
    uint32_t desired_swapchain_images;
-   VkSwapchainCreateInfoKHR info = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
    VkSurfaceCapabilitiesKHR surface_properties;
    VkSurfaceFormatKHR formats[256];
    VkPresentModeKHR present_modes[16];
@@ -1919,8 +2286,11 @@ bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
    VkExtent2D swapchain_size;
    VkSwapchainKHR old_swapchain;
    VkSurfaceTransformFlagBitsKHR pre_transform;
+   VkSwapchainCreateInfoKHR info           = { 
+      VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
    VkPresentModeKHR swapchain_present_mode = VK_PRESENT_MODE_FIFO_KHR;
-   settings_t *settings = config_get_ptr();
+   settings_t                    *settings = config_get_ptr();
+   VkCompositeAlphaFlagBitsKHR composite   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
 
    vkDeviceWaitIdle(vk->context.device);
 
@@ -1943,6 +2313,7 @@ bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
             present_modes[i]);
    }
 
+   vk->context.swap_interval = swap_interval;
    for (i = 0; i < present_mode_count; i++)
    {
       if (!swap_interval && present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
@@ -1950,7 +2321,8 @@ bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
          swapchain_present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
          break;
       }
-      else if (!swap_interval && present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
+      else if (!swap_interval && present_modes[i] 
+            == VK_PRESENT_MODE_IMMEDIATE_KHR)
       {
          swapchain_present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
          break;
@@ -1973,6 +2345,7 @@ bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
    vkGetPhysicalDeviceSurfaceFormatsKHR(vk->context.gpu,
          vk->vk_surface, &format_count, formats);
 
+   format.format = VK_FORMAT_UNDEFINED;
    if (format_count == 1 && formats[0].format == VK_FORMAT_UNDEFINED)
    {
       format        = formats[0];
@@ -1986,7 +2359,19 @@ bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
          return false;
       }
 
-      format = formats[0];
+      for (i = 0; i < format_count; i++)
+      {
+         if (
+               formats[i].format == VK_FORMAT_R8G8B8A8_UNORM ||
+               formats[i].format == VK_FORMAT_B8G8R8A8_UNORM ||
+               formats[i].format == VK_FORMAT_A8B8G8R8_UNORM_PACK32)
+         {
+            format = formats[i];
+         }
+      }
+
+      if (format.format == VK_FORMAT_UNDEFINED)
+         format = formats[0];
    }
 
    if (surface_properties.currentExtent.width == -1)
@@ -2003,8 +2388,8 @@ bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
    desired_swapchain_images = surface_properties.minImageCount + 1;
 
    /* Limit latency. */
-   if (desired_swapchain_images > settings->video.max_swapchain_images)
-      desired_swapchain_images = settings->video.max_swapchain_images;
+   if (desired_swapchain_images > settings->uints.video_max_swapchain_images)
+      desired_swapchain_images = settings->uints.video_max_swapchain_images;
 
    if (desired_swapchain_images < surface_properties.minImageCount)
       desired_swapchain_images = surface_properties.minImageCount;
@@ -2019,6 +2404,15 @@ bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
    else
       pre_transform            = surface_properties.currentTransform;
 
+   if (surface_properties.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
+      composite = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+   else if (surface_properties.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR)
+      composite = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
+   else if (surface_properties.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR)
+      composite = VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR;
+   else if (surface_properties.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR)
+      composite = VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR;
+
    old_swapchain               = vk->swapchain;
 
    info.surface                = vk->vk_surface;
@@ -2030,14 +2424,15 @@ bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
    info.imageArrayLayers       = 1;
    info.imageSharingMode       = VK_SHARING_MODE_EXCLUSIVE;
    info.preTransform           = pre_transform;
-   info.compositeAlpha         = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+   info.compositeAlpha         = composite;
    info.presentMode            = swapchain_present_mode;
    info.clipped                = true;
    info.oldSwapchain           = old_swapchain;
    info.imageUsage             = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT 
-      | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+      | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
-   if (vkCreateSwapchainKHR(vk->context.device, &info, NULL, &vk->swapchain) != VK_SUCCESS)
+   if (vkCreateSwapchainKHR(vk->context.device,
+            &info, NULL, &vk->swapchain) != VK_SUCCESS)
    {
       RARCH_ERR("[Vulkan]: Failed to create swapchain.\n");
       return false;

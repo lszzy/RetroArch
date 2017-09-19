@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -18,9 +18,8 @@
 
 #include <string/stdstring.h>
 
+#include "../drivers/d3d.h"
 #include "../font_driver.h"
-#include "../d3d/d3d.h"
-#include "../../general.h"
 
 #include "../drivers/d3d_shaders/font.hlsl.d3d9.h"
 
@@ -520,7 +519,8 @@ static HRESULT xdk360_video_font_create_shaders(xdk360_video_font_t * font)
 }
 
 static void *xdk360_init_font(void *video_data,
-      const char *font_path, float font_size)
+      const char *font_path, float font_size,
+       bool is_threaded)
 {
    uint32_t dwFileVersion;
    const void *pFontData      = NULL;
@@ -592,7 +592,7 @@ error:
    return NULL;
 }
 
-static void xdk360_free_font(void *data)
+static void xdk360_free_font(void *data, bool is_threaded)
 {
    xdk360_video_font_t *font = (xdk360_video_font_t*)data;
 
@@ -600,10 +600,10 @@ static void xdk360_free_font(void *data)
       return;
 
    /* Destroy the font */
-   font->m_pFontTexture = NULL;
-   font->m_dwNumGlyphs = 0L;
-   font->m_Glyphs = NULL;
-   font->m_cMaxGlyph = 0;
+   font->m_pFontTexture    = NULL;
+   font->m_dwNumGlyphs     = 0L;
+   font->m_Glyphs          = NULL;
+   font->m_cMaxGlyph       = 0;
    font->m_TranslatorTable = NULL;
 
    if (font->s_FontLocals.m_pFontPixelShader)
@@ -613,9 +613,9 @@ static void xdk360_free_font(void *data)
    if (font->s_FontLocals.m_pFontVertexDecl)
       font->s_FontLocals.m_pFontVertexDecl->Release();
 
-   font->s_FontLocals.m_pFontPixelShader = NULL;
+   font->s_FontLocals.m_pFontPixelShader  = NULL;
    font->s_FontLocals.m_pFontVertexShader = NULL;
-   font->s_FontLocals.m_pFontVertexDecl = NULL;
+   font->s_FontLocals.m_pFontVertexDecl   = NULL;
 
    if (m_xprResource.Initialized())
       m_xprResource.Destroy();
@@ -626,7 +626,6 @@ static void xdk360_free_font(void *data)
 
 static void xdk360_render_msg_post(xdk360_video_font_t * font)
 {
-   /* Cache the global pointer into a register */
    LPDIRECT3DDEVICE d3dr = font->d3d->dev;
 
    d3d_set_texture(d3dr, 0, NULL);
@@ -805,7 +804,9 @@ static void xdk360_draw_text(xdk360_video_font_t *font,
    d3dr->EndVertices();
 }
 
-static void xdk360_render_msg(void *data, const char *str_msg,
+static void xdk360_render_msg(
+      video_frame_info_t *video_info,
+      void *data, const char *str_msg,
       const void *userdata)
 {
    float x, y;

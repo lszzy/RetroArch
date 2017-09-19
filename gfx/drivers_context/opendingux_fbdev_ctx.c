@@ -16,9 +16,9 @@
 
 #include <signal.h>
 
-#include "../../driver.h"
-#include "../../general.h"
-#include "../../runloop.h"
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
 
 #ifdef HAVE_EGL
 #include "../common/egl_common.h"
@@ -28,10 +28,13 @@
 #include "../common/gl_common.h"
 #endif
 
+#include "../../frontend/frontend_driver.h"
+
 typedef struct
 {
 #ifdef HAVE_EGL
    egl_ctx_data_t egl;
+   EGLNativeWindowType native_window;
 #endif
    bool resize;
    unsigned width, height;
@@ -41,18 +44,18 @@ static void gfx_ctx_opendingux_destroy(void *data)
 {
    opendingux_ctx_data_t *viv = (opendingux_ctx_data_t*)data;
 
-   if (!viv)
-      return;
-
+   if (viv)
+   {
 #ifdef HAVE_EGL
-   egl_destroy(&viv->egl);
+      egl_destroy(&viv->egl);
 #endif
 
-   viv->resize       = false;
-   free(viv);
+      viv->resize       = false;
+      free(viv);
+   }
 }
 
-static void *gfx_ctx_opendingux_init(void *video_driver)
+static void *gfx_ctx_opendingux_init(video_frame_info_t *video_info, void *video_driver)
 {
 #ifdef HAVE_EGL
    EGLint n;
@@ -77,12 +80,10 @@ static void *gfx_ctx_opendingux_init(void *video_driver)
    if (!viv)
       return NULL;
    
-   (void)video_driver;
-
 #ifdef HAVE_EGL
-   egl_install_sighandlers();
+   frontend_driver_install_signal_handler();
 
-   if (!egl_init_context(&viv->egl, EGL_DEFAULT_DISPLAY,
+   if (!egl_init_context(&viv->egl, EGL_NONE, EGL_DEFAULT_DISPLAY,
             &major, &minor,
             &n, attribs))
    {
@@ -111,7 +112,7 @@ static void gfx_ctx_opendingux_get_video_size(void *data,
 }
 
 static void gfx_ctx_opendingux_check_window(void *data, bool *quit,
-      bool *resize, unsigned *width, unsigned *height, unsigned frame_count)
+      bool *resize, unsigned *width, unsigned *height, bool is_shutdown)
 {
    unsigned new_width, new_height;
    opendingux_ctx_data_t *viv = (opendingux_ctx_data_t*)data;
@@ -127,38 +128,15 @@ static void gfx_ctx_opendingux_check_window(void *data, bool *quit,
       *resize = true;
    }
 
-   *quit = g_egl_quit;
-}
-
-static bool gfx_ctx_opendingux_set_resize(void *data,
-      unsigned width, unsigned height)
-{
-   (void)data;
-   (void)width;
-   (void)height;
-   return false;
-}
-
-static void gfx_ctx_opendingux_update_window_title(void *data)
-{
-   char buf[128]        = {0};
-   char buf_fps[128]    = {0};
-   settings_t *settings = config_get_ptr();
-
-   (void)data;
-
-   video_monitor_get_fps(buf, sizeof(buf),
-         buf_fps, sizeof(buf_fps));
-   if (settings->fps_show)
-      runloop_msg_queue_push(buf_fps, 1, 1, false);
+   *quit   = (bool)frontend_driver_get_signal_handler_state();
 }
 
 static bool gfx_ctx_opendingux_set_video_mode(void *data,
+      video_frame_info_t *video_info,
       unsigned width, unsigned height,
       bool fullscreen)
 {
 #ifdef HAVE_EGL
-   EGLNativeWindowType window;
    static const EGLint attribs[] = {
       EGL_CONTEXT_CLIENT_VERSION, 2, /* Use version 2, even for GLES3. */
       EGL_NONE
@@ -182,8 +160,8 @@ static bool gfx_ctx_opendingux_set_video_mode(void *data,
       goto error;
    }
 
-   window = 0;
-   if (!egl_create_surface(&viv->egl, window))
+   viv->native_window = 0;
+   if (!egl_create_surface(&viv->egl, viv->native_window))
       goto error;
 #endif
 
@@ -198,10 +176,10 @@ error:
 }
 
 static void gfx_ctx_opendingux_input_driver(void *data,
+      const char *name,
       const input_driver_t **input, void **input_data)
 {
-   (void)data;
-   *input = NULL;
+   *input      = NULL;
    *input_data = NULL;
 }
 
@@ -225,13 +203,7 @@ static bool gfx_ctx_opendingux_suppress_screensaver(void *data, bool enable)
    return false;
 }
 
-static bool gfx_ctx_opendingux_has_windowed(void *data)
-{
-   (void)data;
-   return false;
-}
-
-static void gfx_ctx_opendingux_swap_buffers(void *data)
+static void gfx_ctx_opendingux_swap_buffers(void *data, void *data2)
 {
    opendingux_ctx_data_t *viv = (opendingux_ctx_data_t*)data;
 
@@ -255,7 +227,7 @@ static gfx_ctx_proc_t gfx_ctx_opendingux_get_proc_address(const char *symbol)
 {
 #ifdef HAVE_EGL
    return egl_get_proc_address(symbol);
-#else
+#endif
 }
 
 static void gfx_ctx_opendingux_bind_hw_render(void *data, bool enable)
@@ -291,12 +263,12 @@ const gfx_ctx_driver_t gfx_ctx_opendingux_fbdev = {
    NULL, /* get_video_output_next */
    NULL, /* get_metrics */
    NULL,
-   gfx_ctx_opendingux_update_window_title,
+   NULL, /* update_title */
    gfx_ctx_opendingux_check_window,
-   gfx_ctx_opendingux_set_resize,
+   NULL, /* set_resize */
    gfx_ctx_opendingux_has_focus,
    gfx_ctx_opendingux_suppress_screensaver,
-   gfx_ctx_opendingux_has_windowed,
+   NULL, /* has_windowed */
    gfx_ctx_opendingux_swap_buffers,
    gfx_ctx_opendingux_input_driver,
    gfx_ctx_opendingux_get_proc_address,
@@ -306,5 +278,7 @@ const gfx_ctx_driver_t gfx_ctx_opendingux_fbdev = {
    "opendingux-fbdev",
    gfx_ctx_opendingux_get_flags,
    gfx_ctx_opendingux_set_flags,
-   gfx_ctx_opendingux_bind_hw_render
+   gfx_ctx_opendingux_bind_hw_render,
+   NULL,
+   NULL
 };

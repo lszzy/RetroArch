@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2013-2014 - Jason Fetters
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -16,6 +16,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <sys/types.h>
 #include <sys/sysctl.h>
 #include <string.h>
@@ -30,8 +31,10 @@
 #ifdef HAVE_DYNAMIC
 #include <dynamic/dylib.h>
 #endif
+#include <string/stdstring.h>
 
-#include "../input_hid_driver.h"
+#include "../input_defines.h"
+#include "../input_driver.h"
 #define BUILDING_BTDYNAMIC
 #include "../connect/joypad_connection.h"
 
@@ -552,8 +555,8 @@ uint32_t embedded_get_ticks(void);
 #define READ_L2CAP_LENGTH(buffer)     ( READ_BT_16(buffer, 4))
 #define READ_L2CAP_CHANNEL_ID(buffer) ( READ_BT_16(buffer, 6))
 
-#define BD_ADDR_CMP(a,b) memcmp(a,b, BD_ADDR_LEN)
-#define BD_ADDR_COPY(dest,src) memcpy(dest,src,BD_ADDR_LEN)
+#define BD_ADDR_CMP(a,b)               memcmp(a,b, BD_ADDR_LEN)
+#define BD_ADDR_COPY(dest,src)         memcpy(dest,src,BD_ADDR_LEN)
 
 void bt_store_16(uint8_t *buffer, uint16_t pos, uint16_t value);
 
@@ -1251,7 +1254,9 @@ static void btpad_packet_handler(uint8_t packet_type,
 
 static bool btstack_try_load(void)
 {
+#ifdef HAVE_DYNAMIC
    unsigned i;
+#endif
    void *handle   = NULL;
 
    if (btstack_tested)
@@ -1369,9 +1374,6 @@ static uint64_t btstack_hid_joypad_get_buttons(void *data, unsigned port)
 static bool btstack_hid_joypad_button(void *data, unsigned port, uint16_t joykey)
 {
    uint64_t buttons          = btstack_hid_joypad_get_buttons(data, port);
-
-   if (joykey == NO_BTN)
-      return false;
 
    /* Check hat. */
    if (GET_HAT_DIR(joykey))

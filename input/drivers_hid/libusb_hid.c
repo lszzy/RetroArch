@@ -1,5 +1,5 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -25,10 +25,8 @@
 
 #include "../connect/joypad_connection.h"
 #include "../input_defines.h"
-#include "../input_autodetect.h"
-#include "../input_config.h"
+#include "../../tasks/tasks_internal.h"
 #include "../input_driver.h"
-#include "../input_hid_driver.h"
 #include "../../verbosity.h"
 
 #ifndef LIBUSB_CAP_HAS_HOTPLUG
@@ -141,16 +139,15 @@ static void libusb_hid_device_add_autodetect(unsigned idx,
       const char *device_name, const char *driver_name,
       uint16_t dev_vid, uint16_t dev_pid)
 {
-   autoconfig_params_t params = {{0}};
-
-   params.idx = idx;
-   params.vid = dev_vid;
-   params.pid = dev_pid;
-
-   strlcpy(params.name, device_name, sizeof(params.name));
-   strlcpy(params.driver, driver_name, sizeof(params.driver));
-
-   input_config_autoconfigure_joypad(&params);
+   if (!input_autoconfigure_connect(
+         device_name,
+         NULL,
+         driver_name,
+         idx,
+         dev_vid,
+         dev_pid
+         ))
+      input_config_set_device_name(idx, device_name);
 }
 
 static void libusb_get_description(struct libusb_device *device,
@@ -367,9 +364,9 @@ static int remove_adapter(void *data, struct libusb_device *dev)
    if (adapter->next->device == dev)
    {
       struct libusb_adapter *new_next = NULL;
-      const char *name = (const char*)adapter->next->name;
+      const char                *name = (const char*)adapter->next->name;
 
-      input_config_autoconfigure_disconnect(adapter->slot, name);
+      input_autoconfigure_disconnect(adapter->slot, name);
 
       adapter->next->quitting = true;
       sthread_join(adapter->next->thread);
@@ -389,8 +386,6 @@ static int remove_adapter(void *data, struct libusb_device *dev)
 
       return 0;
    }
-
-   adapter = adapter->next;
 
    return -1;
 }
@@ -443,9 +438,6 @@ static bool libusb_hid_joypad_button(void *data,
       unsigned port, uint16_t joykey)
 {
    uint64_t buttons          = libusb_hid_joypad_get_buttons(data, port);
-
-   if (joykey == NO_BTN)
-      return false;
 
    /* Check hat. */
    if (GET_HAT_DIR(joykey))

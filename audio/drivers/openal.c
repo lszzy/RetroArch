@@ -1,5 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -13,6 +14,7 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -28,8 +30,10 @@
 #include <windows.h>
 #endif
 
+#include <retro_miscellaneous.h>
+#include <retro_timers.h>
+
 #include "../audio_driver.h"
-#include "../../configuration.h"
 #include "../../verbosity.h"
 
 #define BUFSIZE 1024
@@ -78,7 +82,9 @@ static void al_free(void *data)
    free(al);
 }
 
-static void *al_init(const char *device, unsigned rate, unsigned latency)
+static void *al_init(const char *device, unsigned rate, unsigned latency,
+      unsigned block_frames,
+      unsigned *new_rate)
 {
    al_t *al;
 
@@ -170,9 +176,9 @@ static size_t al_fill_internal_buf(al_t *al, const void *buf, size_t size)
 
 static ssize_t al_write(void *data, const void *buf_, size_t size)
 {
-   al_t *al = (al_t*)data;
+   al_t           *al = (al_t*)data;
    const uint8_t *buf = (const uint8_t*)buf_;
-   size_t written = 0;
+   size_t     written = 0;
 
    while (size)
    {
@@ -230,7 +236,7 @@ static void al_set_nonblock_state(void *data, bool state)
       al->nonblock = state;
 }
 
-static bool al_start(void *data)
+static bool al_start(void *data, bool is_shutdown)
 {
    al_t *al = (al_t*)data;
    if (al)

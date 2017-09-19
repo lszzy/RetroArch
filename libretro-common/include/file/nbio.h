@@ -1,7 +1,7 @@
-/* Copyright  (C) 2010-2015 The RetroArch team
+/* Copyright  (C) 2010-2017 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
- * The following license statement only applies to this file (dir_list.h).
+ * The following license statement only applies to this file (nbio.h).
  * ---------------------------------------------------------------------------------------
  *
  * Permission is hereby granted, free of charge,
@@ -25,6 +25,10 @@
 
 #include <stddef.h>
 #include <boolean.h>
+
+#include <retro_common_api.h>
+
+RETRO_BEGIN_DECLS
 
 #ifndef NBIO_READ
 #define NBIO_READ   0
@@ -92,5 +96,7 @@ void nbio_cancel(struct nbio_t* handle);
  * Deletes the nbio structure and its associated pointer.
  */
 void nbio_free(struct nbio_t* handle);
+
+RETRO_END_DECLS
 
 #endif

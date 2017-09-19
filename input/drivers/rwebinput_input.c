@@ -1,5 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2015 - Michael Lelli
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -15,17 +16,15 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
+
 #include <boolean.h>
 
-#include "../input_joypad_driver.h"
-#include "../input_autodetect.h"
-#include "../input_keyboard.h"
-#include "../input_config.h"
+#include "../input_driver.h"
 #include "../input_keymaps.h"
 
-#include "../../driver.h"
-
-#include "../../general.h"
+#include "../../tasks/tasks_internal.h"
+#include "../../configuration.h"
 
 typedef struct rwebinput_state
 {
@@ -47,7 +46,7 @@ typedef struct rwebinput_input
    int context;
 } rwebinput_input_t;
 
-static void *rwebinput_input_init(void)
+static void *rwebinput_input_init(const char *joypad_driver)
 {
    rwebinput_input_t *rwebinput = (rwebinput_input_t*)calloc(1, sizeof(*rwebinput));
    if (!rwebinput)
@@ -67,20 +66,19 @@ error:
    return NULL;
 }
 
-static bool rwebinput_key_pressed(void *data, int key)
+static bool rwebinput_key_pressed_internal(void *data, int key)
 {
    unsigned sym;
+   bool ret;
    rwebinput_input_t *rwebinput = (rwebinput_input_t*)data;
    
    if (key >= RETROK_LAST)
       return false;
 
-   sym = input_keymaps_translate_rk_to_keysym((enum retro_key)key);
+   sym = rarch_keysym_lut[(enum retro_key)key];
+   ret = rwebinput->state.keys[sym >> 3] & (1 << (sym & 7));
 
-   if (rwebinput->state.keys[sym >> 3] & (1 << (sym & 7)))
-      return true;
-
-   return false;
+   return ret;
 }
 
 static bool rwebinput_meta_key_pressed(void *data, int key)
@@ -96,10 +94,18 @@ static bool rwebinput_is_pressed(rwebinput_input_t *rwebinput,
    if (id < RARCH_BIND_LIST_END)
    {
       const struct retro_keybind *bind = &binds[id];
-      return bind->valid && rwebinput_key_pressed(rwebinput, binds[id].key);
+      int key                          = binds[id].key;
+      return bind->valid && (key < RETROK_LAST) 
+         && rwebinput_key_pressed_internal(rwebinput, key);
    }
 
    return false;
+}
+
+static bool rwebinput_key_pressed(void *data, int key)
+{
+   rwebinput_input_t *rwebinput = (rwebinput_input_t*)data;
+   return rwebinput_is_pressed(rwebinput, input_config_binds[0], key);
 }
 
 static int16_t rwebinput_mouse_state(rwebinput_input_t *rwebinput, unsigned id)
@@ -136,7 +142,9 @@ static int16_t rwebinput_analog_pressed(rwebinput_input_t *rwebinput,
    return pressed_plus + pressed_minus;
 }
 
-static int16_t rwebinput_input_state(void *data, const struct retro_keybind **binds,
+static int16_t rwebinput_input_state(void *data,
+      rarch_joypad_info_t joypad_info,
+      const struct retro_keybind **binds,
       unsigned port, unsigned device, unsigned idx, unsigned id)
 {
    rwebinput_input_t *rwebinput  = (rwebinput_input_t*)data;
@@ -145,13 +153,10 @@ static int16_t rwebinput_input_state(void *data, const struct retro_keybind **bi
    {
       case RETRO_DEVICE_JOYPAD:
          return rwebinput_is_pressed(rwebinput, binds[port], id);
-
       case RETRO_DEVICE_ANALOG:
          return rwebinput_analog_pressed(rwebinput, binds[port], idx, id);
-
       case RETRO_DEVICE_KEYBOARD:
          return rwebinput_key_pressed(rwebinput, id);
-
       case RETRO_DEVICE_MOUSE:
          return rwebinput_mouse_state(rwebinput, id);
    }
@@ -249,7 +254,6 @@ input_driver_t input_rwebinput = {
    rwebinput_input_init,
    rwebinput_input_poll,
    rwebinput_input_state,
-   rwebinput_key_pressed,
    rwebinput_meta_key_pressed,
    rwebinput_input_free,
    NULL,

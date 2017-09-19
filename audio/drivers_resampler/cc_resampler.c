@@ -1,5 +1,5 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2014-2016 - Ali Bouhlel ( aliaspider@gmail.com )
+ *  Copyright (C) 2014-2017 - Ali Bouhlel ( aliaspider@gmail.com )
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -25,8 +25,9 @@
 #include <retro_inline.h>
 #include <retro_miscellaneous.h>
 #include <memalign.h>
+#include <math/float_minmax.h>
 
-#include "../audio_resampler_driver.h"
+#include <audio/audio_resampler.h>
 
 /* Since SSE and NEON don't provide support for trigonometric functions
  * we approximate those with polynoms
@@ -59,10 +60,10 @@ typedef struct rarch_CC_resampler
 static void resampler_CC_process(void *re_, struct resampler_data *data)
 {
    float ratio, fraction;
-   audio_frame_float_t *inp = (audio_frame_float_t*)data->data_in;
+   audio_frame_float_t     *inp = (audio_frame_float_t*)data->data_in;
    audio_frame_float_t *inp_max = (audio_frame_float_t*)
       (inp + data->input_frames);
-   audio_frame_float_t *outp = (audio_frame_float_t*)data->data_out;
+   audio_frame_float_t    *outp = (audio_frame_float_t*)data->data_out;
 
    (void)re_;
 
@@ -196,15 +197,15 @@ static void resampler_CC_downsample(void *re_, struct resampler_data *data)
       __m128 vec_in;
       __m128 vec_ratio =
          _mm_mul_ps(_mm_set_ps1(ratio), _mm_set_ps(3.0, 2.0, 1.0, 0.0));
-      __m128 vec_w = _mm_sub_ps(_mm_set_ps1(re->distance), vec_ratio);
+      __m128 vec_w     = _mm_sub_ps(_mm_set_ps1(re->distance), vec_ratio);
 
-      __m128 vec_w1 = _mm_add_ps(vec_w , _mm_set_ps1(0.5));
-      __m128 vec_w2 = _mm_sub_ps(vec_w , _mm_set_ps1(0.5));
+      __m128 vec_w1    = _mm_add_ps(vec_w , _mm_set_ps1(0.5));
+      __m128 vec_w2    = _mm_sub_ps(vec_w , _mm_set_ps1(0.5));
 
-      __m128 vec_b = _mm_set_ps1(b);
+      __m128 vec_b     = _mm_set_ps1(b);
 
-      vec_w1 = _mm_mul_ps(vec_w1, vec_b);
-      vec_w2 = _mm_mul_ps(vec_w2, vec_b);
+      vec_w1           = _mm_mul_ps(vec_w1, vec_b);
+      vec_w2           = _mm_mul_ps(vec_w2, vec_b);
 
       (void)vec_ww1;
       (void)vec_ww2;
@@ -271,7 +272,7 @@ static void resampler_CC_upsample(void *re_, struct resampler_data *data)
    audio_frame_float_t *inp     = (audio_frame_float_t*)data->data_in;
    audio_frame_float_t *inp_max = (audio_frame_float_t*)(inp + data->input_frames);
    audio_frame_float_t *outp    = (audio_frame_float_t*)data->data_out;
-   float b                      = MIN(data->ratio, 1.00); /* cutoff frequency. */
+   float b                      = float_min(data->ratio, 1.00); /* cutoff frequency. */
    float ratio                  = 1.0 / data->ratio;
    __m128 vec_previous          = _mm_loadu_ps((float*)&re->buffer[0]);
    __m128 vec_current           = _mm_loadu_ps((float*)&re->buffer[2]);
@@ -347,7 +348,7 @@ static void resampler_CC_upsample(void *re_, struct resampler_data *data)
 }
 
 
-#elif defined (__ARM_NEON__)
+#elif defined (__ARM_NEON__) && !defined(DONT_WANT_ARM_OPTIMIZATIONS)
 
 #define CC_RESAMPLER_IDENT "NEON"
 
@@ -446,7 +447,7 @@ static void resampler_CC_upsample(void *re_, struct resampler_data *data)
    audio_frame_float_t *inp_max = (audio_frame_float_t*)
       (inp + data->input_frames);
    audio_frame_float_t *outp    = (audio_frame_float_t*)data->data_out;
-   float                      b = MIN(data->ratio, 1.00); /* cutoff frequency. */
+   float                      b = float_min(data->ratio, 1.00); /* cutoff frequency. */
    float                  ratio = 1.0 / data->ratio;
 
    while (inp != inp_max)
@@ -539,7 +540,7 @@ static void resampler_CC_free(void *re_)
    (void)re_;
 }
 
-rarch_resampler_t CC_resampler = {
+retro_resampler_t CC_resampler = {
    resampler_CC_init,
    resampler_CC_process,
    resampler_CC_free,

@@ -1,5 +1,5 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -26,28 +26,48 @@
 #endif
 #endif
 
+#include <stdio.h>
+#include <stdarg.h>
+
 #ifdef ANDROID
 #include <android/log.h>
 #endif
 
 #include <string/stdstring.h>
 
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
+#ifdef RARCH_INTERNAL
+#include "frontend/frontend_driver.h"
+#endif
+
 #include "file_path_special.h"
 #include "verbosity.h"
 
-/* If this is non-NULL. RARCH_LOG and friends 
+/* If this is non-NULL. RARCH_LOG and friends
  * will write to this file. */
-static FILE *log_file      = NULL;
-static bool main_verbosity = false;
+static FILE *log_file            = NULL;
+static bool main_verbosity       = false;
+static bool log_file_initialized = false;
 
 void verbosity_enable(void)
 {
    main_verbosity = true;
+#ifdef RARCH_INTERNAL
+   if (!log_file_initialized)
+      frontend_driver_attach_console();
+#endif
 }
 
 void verbosity_disable(void)
 {
    main_verbosity = false;
+#ifdef RARCH_INTERNAL
+   if (!log_file_initialized)
+      frontend_driver_detach_console();
+#endif
 }
 
 bool verbosity_is_enabled(void)
@@ -60,18 +80,22 @@ bool *verbosity_get_ptr(void)
    return &main_verbosity;
 }
 
-FILE *retro_main_log_file(void)
+void *retro_main_log_file(void)
 {
    return log_file;
 }
 
 void retro_main_log_file_init(const char *path)
 {
-   log_file     = stderr;
+   if (log_file_initialized)
+      return;
+
+   log_file             = stderr;
    if (path == NULL)
       return;
 
-   log_file = fopen(path, "wb");
+   log_file             = fopen(path, "wb");
+   log_file_initialized = true;
 }
 
 void retro_main_log_file_deinit(void)
@@ -85,10 +109,13 @@ void retro_main_log_file_deinit(void)
 void RARCH_LOG_V(const char *tag, const char *fmt, va_list ap)
 {
 #if TARGET_OS_IPHONE
-   static int asl_inited = 0;
+   static int asl_initialized = 0;
 #if !TARGET_IPHONE_SIMULATOR
 static aslclient asl_client;
 #endif
+#else
+   FILE *fp = NULL;
+   (void)fp;
 #endif
 
    if (!verbosity_is_enabled())
@@ -97,10 +124,10 @@ static aslclient asl_client;
 #if TARGET_IPHONE_SIMULATOR
    vprintf(fmt, ap);
 #else
-   if (!asl_inited)
+   if (!asl_initialized)
    {
       asl_client = asl_open(file_path_str(FILE_PATH_PROGRAM_NAME), "com.apple.console", ASL_OPT_STDERR | ASL_OPT_NO_DELAY);
-      asl_inited = 1;
+      asl_initialized = 1;
    }
    aslmsg msg = asl_new(ASL_TYPE_MSG);
    asl_set(msg, ASL_KEY_READ_UID, "-1");
@@ -111,7 +138,10 @@ static aslclient asl_client;
 #endif
 #elif defined(_XBOX1)
    /* FIXME: Using arbitrary string as fmt argument is unsafe. */
-   char msg_new[1024], buffer[1024];
+   char msg_new[1024];
+   char buffer[1024];
+
+   msg_new[0] = buffer[0] = '\0';
    snprintf(msg_new, sizeof(msg_new), "%s: %s %s",
          file_path_str(FILE_PATH_PROGRAM_NAME),
          tag ? tag : "",
@@ -134,12 +164,11 @@ static aslclient asl_client;
 #else
 
 #ifdef HAVE_FILE_LOGGER
-   FILE *fp = retro_main_log_file();
+   fp = (FILE*)retro_main_log_file();
 #else
-   FILE *fp = stderr;
+   fp = stderr;
 #endif
-   fprintf(fp, "%s %s :: ",
-         file_path_str(FILE_PATH_PROGRAM_NAME),
+   fprintf(fp, "%s ",
          tag ? tag : file_path_str(FILE_PATH_LOG_INFO));
    vfprintf(fp, fmt, ap);
    fflush(fp);

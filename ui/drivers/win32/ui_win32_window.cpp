@@ -1,6 +1,6 @@
 /* RetroArch - A frontend for libretro.
- *  Copyright (C) 2015-2016 - Ali Bouhlel
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2015-2017 - Ali Bouhlel
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  * RetroArch is free software: you can redistribute it and/or modify it under the terms
  * of the GNU General Public License as published by the Free Software Found-
@@ -47,7 +47,7 @@
 
 #include "../../ui_companion_driver.h"
 #include "../../../driver.h"
-#include "../../../runloop.h"
+#include "../../../retroarch.h"
 #include "../../../tasks/tasks_internal.h"
 
 static void ui_window_win32_destroy(void *data)
@@ -75,11 +75,17 @@ static void ui_window_win32_set_title(void *data, char *buf)
    SetWindowText(window->hwnd, buf);
 }
 
-static void ui_window_win32_set_droppable(void *data, bool droppable)
+extern "C"
+{
+   VOID (WINAPI *DragAcceptFiles_func)(HWND, BOOL);
+}
+
+void ui_window_win32_set_droppable(void *data, bool droppable)
 {
    /* Minimum supported client: Windows XP, minimum supported server: Windows 2000 Server */
    ui_window_win32_t *window = (ui_window_win32_t*)data;
-   DragAcceptFiles(window->hwnd, droppable);
+   if (DragAcceptFiles_func != NULL)
+      DragAcceptFiles_func(window->hwnd, droppable);
 }
 
 static bool ui_window_win32_focused(void *data)

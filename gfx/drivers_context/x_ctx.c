@@ -1,6 +1,7 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
+ *  Copyright (C) 2016-2017 - Brad Parker
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -15,29 +16,74 @@
  */
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <signal.h>
+
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
 
 #ifdef HAVE_OPENGL
 #include <GL/glx.h>
+
+#ifndef GLX_SAMPLE_BUFFERS
+#define GLX_SAMPLE_BUFFERS 100000
 #endif
 
-#include "../../driver.h"
+#ifndef GLX_SAMPLES
+#define GLX_SAMPLES 100001
+#endif
 
+#endif
+
+#include <string/stdstring.h>
+
+#include "../../configuration.h"
+#include "../../frontend/frontend_driver.h"
 #include "../common/gl_common.h"
 #include "../common/x11_common.h"
+
+#ifdef HAVE_XINERAMA
+#include "../common/xinerama_common.h"
+#endif
 
 #ifdef HAVE_VULKAN
 #include "../common/vulkan_common.h"
 #endif
 
-static int (*g_pglSwapInterval)(int);
-static int (*g_pglSwapIntervalSGI)(int);
 #ifdef HAVE_OPENGL
-static void (*g_pglSwapIntervalEXT)(Display*, GLXDrawable, int);
+static int      (*g_pglSwapInterval)(int);
+static int      (*g_pglSwapIntervalSGI)(int);
+static void     (*g_pglSwapIntervalEXT)(Display*, GLXDrawable, int);
+typedef Bool    (*GLXGETSYNCVALUESOMLPROC)(Display *dpy, GLXDrawable drawable,
+      int64_t *ust, int64_t *msc, int64_t *sbc);
+typedef Bool    (*GLXGETMSCRATEOMLPROC)(Display *dpy, GLXDrawable drawable, int32_t *numerator,
+      int32_t *denominator);
+typedef int64_t (*GLXSWAPBUFFERSMSCOMLPROC)(Display *dpy, GLXDrawable drawable,
+      int64_t target_msc, int64_t divisor,
+      int64_t remainder);
+typedef Bool    (*GLXWAITFORMSCOMLPROC)(Display *dpy, GLXDrawable drawable, int64_t target_msc,
+      int64_t divisor, int64_t remainder, int64_t *ust,
+      int64_t *msc, int64_t *sbc);
+typedef Bool    (*GLXWAITFORSBCOMLPROC)(Display *dpy, GLXDrawable drawable, int64_t target_sbc,
+      int64_t *ust, int64_t *msc, int64_t *sbc);
+
+static GLXGETSYNCVALUESOMLPROC  glXGetSyncValuesOML;
+static GLXGETMSCRATEOMLPROC     glXGetMscRateOML;
+static GLXSWAPBUFFERSMSCOMLPROC glXSwapBuffersMscOML;
+static GLXWAITFORMSCOMLPROC     glXWaitForMscOML;
+static GLXWAITFORSBCOMLPROC     glXWaitForSbcOML;
+
 #endif
 
 typedef struct gfx_ctx_x_data
 {
+   int64_t ust;
+   int64_t msc;
+   int64_t sbc;
+
+   int divisor;
+   int remainder;
    bool g_use_hw_ctx;
    bool g_core_es;
    bool g_core_es_core;
@@ -50,22 +96,49 @@ typedef struct gfx_ctx_x_data
    GLXWindow g_glx_win;
    GLXContext g_ctx, g_hw_ctx;
    GLXFBConfig g_fbc;
+   unsigned swap_mode;
 #endif
 
    unsigned g_interval;
-   XF86VidModeModeInfo g_desktop_mode;
 
 #ifdef HAVE_VULKAN
    gfx_ctx_vulkan_data_t vk;
 #endif
 } gfx_ctx_x_data_t;
 
-static unsigned g_major;
-static unsigned g_minor;
-static enum gfx_ctx_api x_api;
+static bool x_enable_msaa                     = false;
+static unsigned g_major                       = 0;
+static unsigned g_minor                       = 0;
+static enum gfx_ctx_api x_api                 = GFX_CTX_NONE;
+
+static gfx_ctx_x_data_t *current_context_data = NULL;
 
 #ifdef HAVE_OPENGL
 static PFNGLXCREATECONTEXTATTRIBSARBPROC glx_create_context_attribs;
+
+static int GLXExtensionSupported(Display *dpy, const char *extension)
+{
+   const char *extensionsString  = glXQueryExtensionsString(dpy, DefaultScreen(dpy));
+   const char *client_extensions = glXGetClientString(dpy, GLX_EXTENSIONS);
+   const char *pos               = strstr(extensionsString, extension);
+
+   if (  (pos != NULL) && 
+         (pos == extensionsString || pos[-1] == ' ') &&
+         (pos[strlen(extension)] == ' ' || pos[strlen(extension)] == '\0')
+      )
+      return 1;
+
+   pos = strstr(client_extensions, extension);
+
+   if (
+         (pos != NULL) && 
+         (pos == extensionsString || pos[-1] == ' ') &&
+         (pos[strlen(extension)] == ' ' || pos[strlen(extension)] == '\0')
+      )
+      return 1;
+
+   return 0;
+}
 #endif
 
 static int x_nul_handler(Display *dpy, XErrorEvent *event)
@@ -88,6 +161,11 @@ static void gfx_ctx_x_destroy_resources(gfx_ctx_x_data_t *x)
 #ifdef HAVE_OPENGL
             if (x->g_ctx)
             {
+               if (x->swap_mode)
+                  glXSwapBuffersMscOML(g_x11_dpy, x->g_glx_win, 0, x->divisor, x->remainder);
+               else
+                  glXSwapBuffers(g_x11_dpy, x->g_glx_win);
+
                glFinish();
                glXMakeContextCurrent(g_x11_dpy, None, None, NULL);
 
@@ -124,31 +202,35 @@ static void gfx_ctx_x_destroy_resources(gfx_ctx_x_data_t *x)
       }
    }
 
-   if (g_x11_win)
+   if (g_x11_win && g_x11_dpy)
    {
+#ifdef HAVE_XINERAMA
       /* Save last used monitor for later. */
-      x11_save_last_used_monitor(DefaultRootWindow(g_x11_dpy));
+      xinerama_save_last_used_monitor(DefaultRootWindow(g_x11_dpy));
+#endif
       x11_window_destroy(false);
    }
 
    x11_colormap_destroy();
 
-   if (x->g_should_reset_mode && g_x11_dpy)
+   if (g_x11_dpy)
    {
-      x11_exit_fullscreen(g_x11_dpy, &x->g_desktop_mode);
-      x->g_should_reset_mode = false;
+      if (x->g_should_reset_mode)
+      {
+         x11_exit_fullscreen(g_x11_dpy);
+         x->g_should_reset_mode = false;
+      }
+
+      if (!video_driver_is_video_cache_context())
+      {
+         XCloseDisplay(g_x11_dpy);
+         g_x11_dpy = NULL;
+      }
    }
 
-   if (!video_driver_is_video_cache_context()
-         && g_x11_dpy)
-   {
-      XCloseDisplay(g_x11_dpy);
-      g_x11_dpy = NULL;
-   }
-
+#ifdef HAVE_OPENGL
    g_pglSwapInterval    = NULL;
    g_pglSwapIntervalSGI = NULL;
-#ifdef HAVE_OPENGL
    g_pglSwapIntervalEXT = NULL;
 #endif
    g_major              = 0;
@@ -228,7 +310,7 @@ static void gfx_ctx_x_swap_interval(void *data, unsigned interval)
    }
 }
 
-static void gfx_ctx_x_swap_buffers(void *data)
+static void gfx_ctx_x_swap_buffers(void *data, void *data2)
 {
    gfx_ctx_x_data_t *x = (gfx_ctx_x_data_t*)data;
 
@@ -236,9 +318,26 @@ static void gfx_ctx_x_swap_buffers(void *data)
    {
       case GFX_CTX_OPENGL_API:
       case GFX_CTX_OPENGL_ES_API:
-#ifdef HAVE_OPENGL
-         if (x->g_is_double)
-            glXSwapBuffers(g_x11_dpy, x->g_glx_win);
+#if defined(HAVE_OPENGL)
+         if (x->swap_mode)
+         {
+            if (x->g_interval)
+            {
+               glXWaitForMscOML(g_x11_dpy, x->g_glx_win, x->msc + x->g_interval,
+                     0, 0, &x->ust, &x->msc, &x->sbc);
+               glXSwapBuffersMscOML(g_x11_dpy, x->g_glx_win, 0, 0, 0);
+            }
+            else
+               glXSwapBuffersMscOML(g_x11_dpy, x->g_glx_win, 0, x->divisor, x->remainder);
+#if 0
+            RARCH_LOG("UST: %d, MSC: %d, SBC: %d\n", x->ust, x->msc, x->sbc);
+#endif
+         }
+         else
+         {
+            if (x->g_is_double)
+               glXSwapBuffers(g_x11_dpy, x->g_glx_win);
+         }
 #endif
          break;
 
@@ -256,20 +355,21 @@ static void gfx_ctx_x_swap_buffers(void *data)
 }
 
 static void gfx_ctx_x_check_window(void *data, bool *quit,
-      bool *resize, unsigned *width, unsigned *height, unsigned frame_count)
+      bool *resize, unsigned *width, unsigned *height,
+      bool is_shutdown)
 {
-#ifdef HAVE_VULKAN
-   gfx_ctx_x_data_t *x = (gfx_ctx_x_data_t*)data;
-#endif
-
-   x11_check_window(data, quit, resize, width, height, frame_count);
+   x11_check_window(data, quit, resize, width, height,
+         is_shutdown);
 
    switch (x_api)
    {
       case GFX_CTX_VULKAN_API:
 #ifdef HAVE_VULKAN
-         if (x->vk.need_new_swapchain)
-            *resize = true;
+         {
+            gfx_ctx_x_data_t *x = (gfx_ctx_x_data_t*)data;
+            if (x->vk.need_new_swapchain)
+               *resize = true;
+         }
 #endif
          break;
 
@@ -282,9 +382,6 @@ static void gfx_ctx_x_check_window(void *data, bool *quit,
 static bool gfx_ctx_x_set_resize(void *data,
       unsigned width, unsigned height)
 {
-#ifdef HAVE_VULKAN
-   gfx_ctx_x_data_t *x = (gfx_ctx_x_data_t*)data;
-#endif
    (void)data;
    (void)width;
    (void)height;
@@ -293,14 +390,20 @@ static bool gfx_ctx_x_set_resize(void *data,
    {
       case GFX_CTX_VULKAN_API:
 #ifdef HAVE_VULKAN
-         if (!vulkan_create_swapchain(&x->vk, width, height, x->g_interval))
          {
-            RARCH_ERR("[X/Vulkan]: Failed to update swapchain.\n");
-            return false;
-         }
+            gfx_ctx_x_data_t *x = (gfx_ctx_x_data_t*)data;
 
-         x->vk.context.invalid_swapchain = true;
-         x->vk.need_new_swapchain        = false;
+            /* FIXME/TODO - threading error here */
+
+            if (!vulkan_create_swapchain(&x->vk, width, height, x->g_interval))
+            {
+               RARCH_ERR("[X/Vulkan]: Failed to update swapchain.\n");
+               return false;
+            }
+
+            x->vk.context.invalid_swapchain = true;
+            x->vk.need_new_swapchain        = false;
+         }
 #endif
          break;
 
@@ -311,9 +414,11 @@ static bool gfx_ctx_x_set_resize(void *data,
    return false;
 }
 
-static void *gfx_ctx_x_init(void *data)
+static void *gfx_ctx_x_init(video_frame_info_t *video_info, void *data)
 {
-   int nelements, major, minor;
+   int nelements           = 0;
+   int major               = 0;
+   int minor               = 0;
 #ifdef HAVE_OPENGL
    static const int visual_attribs[] = {
       GLX_X_RENDERABLE     , True,
@@ -326,6 +431,8 @@ static void *gfx_ctx_x_init(void *data)
       GLX_ALPHA_SIZE       , 8,
       GLX_DEPTH_SIZE       , 0,
       GLX_STENCIL_SIZE     , 0,
+      GLX_SAMPLE_BUFFERS   , 0,
+      GLX_SAMPLES          , 0,
       None
    };
    GLXFBConfig *fbcs       = NULL;
@@ -340,6 +447,8 @@ static void *gfx_ctx_x_init(void *data)
    if (!x)
       return NULL;
 
+   current_context_data = x;
+
    XInitThreads();
 
    if (!x11_connect())
@@ -350,7 +459,7 @@ static void *gfx_ctx_x_init(void *data)
    {
       case GFX_CTX_OPENGL_API:
       case GFX_CTX_OPENGL_ES_API:
-#ifdef HAVE_OPENGL
+#if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES)
          glXQueryVersion(g_x11_dpy, &major, &minor);
 
          /* GLX 1.3+ minimum required. */
@@ -407,6 +516,36 @@ static void *gfx_ctx_x_init(void *data)
          break;
    }
 
+   switch (x_api)
+   {
+      case GFX_CTX_OPENGL_API:
+#ifdef HAVE_OPENGL
+         if (GLXExtensionSupported(g_x11_dpy, "GLX_OML_sync_control") &&
+             GLXExtensionSupported(g_x11_dpy, "GLX_MESA_swap_control")
+            )
+         {
+            RARCH_LOG("[GLX]: GLX_OML_sync_control and GLX_MESA_swap_control supported, using better swap control method...\n");
+
+            x->swap_mode         = 1;
+
+            glXGetSyncValuesOML  = (GLXGETSYNCVALUESOMLPROC)glXGetProcAddress((unsigned char *)"glXGetSyncValuesOML");
+            glXGetMscRateOML     = (GLXGETMSCRATEOMLPROC)glXGetProcAddress((unsigned char *)"glXGetMscRateOML");
+            glXSwapBuffersMscOML = (GLXSWAPBUFFERSMSCOMLPROC)glXGetProcAddress((unsigned char *)"glXSwapBuffersMscOML");
+            glXWaitForMscOML     = (GLXWAITFORMSCOMLPROC)glXGetProcAddress((unsigned char *)"glXWaitForMscOML");
+            glXWaitForSbcOML     = (GLXWAITFORSBCOMLPROC)glXGetProcAddress((unsigned char *)"glXWaitForSbcOML");
+
+            glXGetSyncValuesOML(g_x11_dpy, g_x11_win, &x->ust, &x->msc, &x->sbc);
+
+#if 0
+            RARCH_LOG("[GLX]: UST: %d, MSC: %d, SBC: %d\n", x->ust, x->msc, x->sbc);
+#endif
+         }
+#endif
+         break;
+      default:
+         break;
+   }
+
    return x;
 
 error:
@@ -421,24 +560,27 @@ error:
 }
 
 static bool gfx_ctx_x_set_video_mode(void *data,
+      video_frame_info_t *video_info,
       unsigned width, unsigned height,
       bool fullscreen)
 {
    XEvent event;
-   bool true_full = false, windowed_full;
-   int val, x_off = 0, y_off = 0;
-   XVisualInfo *vi = NULL;
-   XSetWindowAttributes swa = {0};
+   bool true_full            = false;
+   bool windowed_full        = false;
+   int val                   = 0;
+   int x_off                 = 0;
+   int y_off                 = 0;
+   XVisualInfo *vi           = NULL;
+   XSetWindowAttributes swa  = {0};
    int (*old_handler)(Display*, XErrorEvent*) = NULL;
-   settings_t *settings    = config_get_ptr();
-   gfx_ctx_x_data_t *x = (gfx_ctx_x_data_t*)data;
+   gfx_ctx_x_data_t *x       = (gfx_ctx_x_data_t*)data;
 
-   x11_install_sighandlers();
+   frontend_driver_install_signal_handler();
 
    if (!x)
       return false;
 
-   windowed_full = settings->video.windowed_fullscreen;
+   windowed_full = video_info->windowed_fullscreen;
    true_full = false;
 
    switch (x_api)
@@ -471,12 +613,13 @@ static bool gfx_ctx_x_set_video_mode(void *data,
    swa.colormap = g_x11_cmap = XCreateColormap(g_x11_dpy,
          RootWindow(g_x11_dpy, vi->screen), vi->visual, AllocNone);
    swa.event_mask = StructureNotifyMask | KeyPressMask | KeyReleaseMask |
+      LeaveWindowMask | EnterWindowMask |
       ButtonReleaseMask | ButtonPressMask;
    swa.override_redirect = fullscreen ? True : False;
 
    if (fullscreen && !windowed_full)
    {
-      if (x11_enter_fullscreen(g_x11_dpy, width, height, &x->g_desktop_mode))
+      if (x11_enter_fullscreen(video_info, g_x11_dpy, width, height))
       {
          x->g_should_reset_mode = true;
          true_full = true;
@@ -485,8 +628,8 @@ static bool gfx_ctx_x_set_video_mode(void *data,
          RARCH_ERR("[GLX]: Entering true fullscreen failed. Will attempt windowed mode.\n");
    }
 
-   if (settings->video.monitor_index)
-      g_x11_screen = settings->video.monitor_index - 1;
+   if (video_info->monitor_index)
+      g_x11_screen = video_info->monitor_index - 1;
 
 #ifdef HAVE_XINERAMA
    if (fullscreen || g_x11_screen != 0)
@@ -494,7 +637,7 @@ static bool gfx_ctx_x_set_video_mode(void *data,
       unsigned new_width  = width;
       unsigned new_height = height;
 
-      if (x11_get_xinerama_coord(g_x11_dpy, g_x11_screen,
+      if (xinerama_get_coord(g_x11_dpy, g_x11_screen,
                &x_off, &y_off, &new_width, &new_height))
          RARCH_LOG("[GLX]: Using Xinerama on screen #%u.\n", g_x11_screen);
       else
@@ -533,7 +676,7 @@ static bool gfx_ctx_x_set_video_mode(void *data,
    }
 
    x11_set_window_attr(g_x11_dpy, g_x11_win);
-   x11_update_window_title(NULL);
+   x11_update_title(NULL, video_info);
 
    if (fullscreen)
       x11_show_mouse(g_x11_dpy, g_x11_win, false);
@@ -659,8 +802,12 @@ static bool gfx_ctx_x_set_video_mode(void *data,
 #ifdef HAVE_VULKAN
          {
             bool quit, resize;
-            unsigned width, height;
-            x11_check_window(x, &quit, &resize, &width, &height, 0);
+            bool shutdown = false;
+            unsigned width = 0, height = 0;
+            x11_check_window(x, &quit, &resize, &width, &height,
+                  shutdown);
+
+            /* FIXME/TODO - threading error here */
 
             /* Use XCB surface since it's the most supported WSI.
              * We can obtain the XCB connection directly from X11. */
@@ -753,14 +900,27 @@ error:
 }
 
 static void gfx_ctx_x_input_driver(void *data,
+      const char *joypad_name,
       const input_driver_t **input, void **input_data)
 {
-   void *xinput = input_x.init();
+   void *x_input         = NULL;
+#ifdef HAVE_UDEV
+   settings_t *settings = config_get_ptr();
 
-   (void)data;
+   if (string_is_equal_fast(settings->arrays.input_driver, "udev", 5))
+   {
+      *input_data = input_udev.init(joypad_name);
+      if (*input_data)
+      {
+         *input = &input_udev;
+         return;
+      }
+   }
+#endif
 
-   *input       = xinput ? &input_x : NULL;
-   *input_data  = xinput;
+   x_input      = input_x.init(joypad_name);
+   *input       = x_input ? &input_x : NULL;
+   *input_data  = x_input;
 }
 
 static bool gfx_ctx_x_suppress_screensaver(void *data, bool enable)
@@ -807,12 +967,12 @@ static bool gfx_ctx_x_bind_api(void *data, enum gfx_ctx_api api,
 
    g_major = major;
    g_minor = minor;
+   x_api   = api;
 
    switch (api)
    {
       case GFX_CTX_OPENGL_API:
 #ifdef HAVE_OPENGL
-         x_api = GFX_CTX_OPENGL_API;
          return true;
 #else
          break;
@@ -830,7 +990,6 @@ static bool gfx_ctx_x_bind_api(void *data, enum gfx_ctx_api api,
                g_major = 2; /* ES 2.0. */
                g_minor = 0;
             }
-            x_api = GFX_CTX_OPENGL_ES_API;
             return ret;
          }
 #else
@@ -838,7 +997,6 @@ static bool gfx_ctx_x_bind_api(void *data, enum gfx_ctx_api api,
 #endif
       case GFX_CTX_VULKAN_API:
 #ifdef HAVE_VULKAN
-         x_api = api;
          return true;
 #else
          break;
@@ -902,6 +1060,10 @@ static uint32_t gfx_ctx_x_get_flags(void *data)
    {
       BIT32_SET(flags, GFX_CTX_FLAGS_NONE);
    }
+   if (x_enable_msaa)
+   {
+      BIT32_SET(flags, GFX_CTX_FLAGS_MULTISAMPLING);
+   }
    return flags;
 }
 
@@ -910,6 +1072,33 @@ static void gfx_ctx_x_set_flags(void *data, uint32_t flags)
    gfx_ctx_x_data_t *x = (gfx_ctx_x_data_t*)data;
    if (BIT32_GET(flags, GFX_CTX_FLAGS_GL_CORE_CONTEXT))
       x->core_hw_context_enable = true;
+   if (BIT32_GET(flags, GFX_CTX_FLAGS_MULTISAMPLING))
+      x_enable_msaa = true;
+}
+
+static void gfx_ctx_x_make_current(bool release)
+{
+   if (!current_context_data)
+      return;
+
+   switch (x_api)
+   {
+      case GFX_CTX_OPENGL_API:
+      case GFX_CTX_OPENGL_ES_API:
+#ifdef HAVE_OPENGL
+         if (release)
+            glXMakeContextCurrent(g_x11_dpy, None, None, NULL);
+         else
+            glXMakeContextCurrent(g_x11_dpy,
+                  current_context_data->g_glx_win,
+                  current_context_data->g_glx_win, current_context_data->g_ctx);
+#endif
+         break;
+
+      case GFX_CTX_NONE:
+      default:
+         break;
+   }
 }
 
 const gfx_ctx_driver_t gfx_ctx_x = {
@@ -924,7 +1113,7 @@ const gfx_ctx_driver_t gfx_ctx_x = {
    NULL, /* get_video_output_next */
    x11_get_metrics,
    NULL,
-   x11_update_window_title,
+   x11_update_title,
    gfx_ctx_x_check_window,
    gfx_ctx_x_set_resize,
    x11_has_focus,
@@ -942,9 +1131,10 @@ const gfx_ctx_driver_t gfx_ctx_x = {
 
    gfx_ctx_x_bind_hw_render,
 #ifdef HAVE_VULKAN
-   gfx_ctx_x_get_context_data
+   gfx_ctx_x_get_context_data,
 #else
-   NULL
+   NULL,
 #endif
+   gfx_ctx_x_make_current
 };
 

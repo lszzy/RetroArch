@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -145,7 +145,7 @@ bool record_driver_init_first(const record_driver_t **backend, void **data,
       const struct ffemu_params *params);
 
 void recording_dump_frame(const void *data, unsigned width,
-      unsigned height, size_t pitch);
+      unsigned height, size_t pitch, bool is_idle);
 
 bool recording_deinit(void);
 
@@ -171,6 +171,16 @@ void *recording_driver_get_data_ptr(void);
 void recording_driver_clear_data_ptr(void);
 
 void recording_driver_set_data_ptr(void *data);
+
+bool *recording_driver_get_use_output_dir_ptr(void);
+
+unsigned *recording_driver_get_width(void);
+
+unsigned *recording_driver_get_height(void);
+
+void recording_driver_free_state(void);
+
+extern void *recording_data;
 
 RETRO_END_DECLS
 

@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -21,8 +21,27 @@
 
 #include <boolean.h>
 #include <retro_common_api.h>
+#include <lists/string_list.h>
 
 RETRO_BEGIN_DECLS
+
+struct core_option
+{
+  char *desc;
+  char *key;
+  struct string_list *vals;
+  size_t index;
+};
+
+struct core_option_manager
+{
+  config_file_t *conf;
+  char conf_path[PATH_MAX_LENGTH];
+
+  struct core_option *opts;
+  size_t size;
+  bool updated;
+};
 
 typedef struct core_option_manager core_option_manager_t;
 
@@ -71,7 +90,7 @@ bool core_option_manager_flush(core_option_manager_t *opt);
  * successfully saved to disk, otherwise false (0).
  **/
 bool core_option_manager_flush_game_specific(
-      core_option_manager_t *opt, char* path);
+      core_option_manager_t *opt, const char* path);
 
 /**
  * core_option_manager_free:

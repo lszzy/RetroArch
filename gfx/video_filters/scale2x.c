@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2014 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -14,7 +14,7 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
-// Compile: gcc -o scale2x.so -shared scale2x.c -std=c99 -O3 -Wall -pedantic -fPIC
+/* Compile: gcc -o scale2x.so -shared scale2x.c -std=c99 -O3 -Wall -pedantic -fPIC */
 
 #include "softfilter.h"
 #include <stdlib.h>
@@ -178,9 +178,9 @@ static void scale2x_work_cb_xrgb8888(void *data, void *thread_data)
 
    scale2x_generic_xrgb8888(width, height,
          thr->first, thr->last, input,
-         thr->in_pitch / SOFTFILTER_BPP_XRGB8888,
+         (unsigned)(thr->in_pitch / SOFTFILTER_BPP_XRGB8888),
          output,
-         thr->out_pitch / SOFTFILTER_BPP_XRGB8888);
+         (unsigned)(thr->out_pitch / SOFTFILTER_BPP_XRGB8888));
 }
 
 static void scale2x_work_cb_rgb565(void *data, void *thread_data)
@@ -194,9 +194,9 @@ static void scale2x_work_cb_rgb565(void *data, void *thread_data)
 
    scale2x_generic_rgb565(width, height,
          thr->first, thr->last, input, 
-         thr->in_pitch / SOFTFILTER_BPP_RGB565,
+         (unsigned)(thr->in_pitch / SOFTFILTER_BPP_RGB565),
          output,
-         thr->out_pitch / SOFTFILTER_BPP_RGB565);
+         (unsigned)(thr->out_pitch / SOFTFILTER_BPP_RGB565));
 }
 
 static void scale2x_generic_packets(void *data,

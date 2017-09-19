@@ -2,7 +2,7 @@ print_help_option() # $1 = option $@ = description
 {
 	_opt="$1"
 	shift 1
-	printf "  %-24s  %s\n" "$_opt" "$@"
+	printf "  %-25s  %s\n" "$_opt" "$@"
 }
 
 print_help()
@@ -43,7 +43,7 @@ EOF
 					print_help_option "--enable-$VAR" "Enable $COMMENT"
 					print_help_option "--disable-$VAR" "Disable $COMMENT";;
 				*)
-					print_help_option "--with-$VAR" "$COMMENT";;
+					print_help_option "--with-$VAR" "Config $COMMENT";;
 			esac
 		esac
 	done < 'qb/config.params.sh'
@@ -72,6 +72,7 @@ parse_input() # Parse stuff :V
 			--disable-*)
 				opt_exists "${1##--disable-}" "$1"
 				eval "HAVE_$opt=no"
+				eval "HAVE_NO_$opt=yes"
 			;;
 			--with-*)
 				arg="${1##--with-}"

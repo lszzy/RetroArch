@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -65,14 +65,15 @@
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
-#include <assert.h>
 #include <stdarg.h>
 #include <time.h>
 #include <errno.h> 
 
 #include <compat/strl.h>
 #include <retro_inline.h>
+#include <retro_assert.h>
 #include <retro_miscellaneous.h>
+#include <retro_timers.h>
 
 /* 
  ****************************************************************************   
@@ -212,7 +213,7 @@ static INLINE int rsnd_format_to_samplesize ( uint16_t fmt )
 
 int rsd_samplesize( rsound_t *rd )
 {
-   assert(rd != NULL);
+   retro_assert(rd != NULL);
    return rd->samplesize;
 }
 
@@ -1298,7 +1299,7 @@ static int rsnd_reset(rsound_t *rd)
 
 int rsd_stop(rsound_t *rd)
 {
-   assert(rd != NULL);
+   retro_assert(rd != NULL);
    rsnd_stop_thread(rd);
 
    const char buf[] = "RSD    5 STOP";
@@ -1314,7 +1315,7 @@ int rsd_stop(rsound_t *rd)
 size_t rsd_write( rsound_t *rsound, const void* buf, size_t size)
 {
    size_t max_write, written = 0;
-   assert(rsound != NULL);
+   retro_assert(rsound != NULL);
    if ( !rsound->ready_for_data )
       return 0;
 
@@ -1339,11 +1340,11 @@ size_t rsd_write( rsound_t *rsound, const void* buf, size_t size)
 
 int rsd_start(rsound_t *rsound)
 {
-   assert(rsound != NULL);
-   assert(rsound->rate > 0);
-   assert(rsound->channels > 0);
-   assert(rsound->host != NULL);
-   assert(rsound->port != NULL);
+   retro_assert(rsound != NULL);
+   retro_assert(rsound->rate > 0);
+   retro_assert(rsound->channels > 0);
+   retro_assert(rsound->host != NULL);
+   retro_assert(rsound->port != NULL);
 
    if ( rsnd_create_connection(rsound) < 0 )
       return -1;
@@ -1353,7 +1354,7 @@ int rsd_start(rsound_t *rsound)
 
 int rsd_exec(rsound_t *rsound)
 {
-   assert(rsound != NULL);
+   retro_assert(rsound != NULL);
    RSD_DEBUG("[RSound] rsd_exec().\n");
 
    // Makes sure we have a working connection
@@ -1406,8 +1407,8 @@ int rsd_exec(rsound_t *rsound)
 /* ioctl()-ish param setting :D */
 int rsd_set_param(rsound_t *rd, enum rsd_settings option, void* param)
 {
-	assert(rd != NULL);
-	assert(param != NULL);
+	retro_assert(rd != NULL);
+	retro_assert(param != NULL);
 	int retval = 0;
 
 	switch(option)
@@ -1505,7 +1506,7 @@ void rsd_delay_wait(rsound_t *rd)
 
 size_t rsd_pointer(rsound_t *rsound)
 {
-   assert(rsound != NULL);
+   retro_assert(rsound != NULL);
    int ptr;
 
    ptr = rsnd_get_ptr(rsound);   
@@ -1515,7 +1516,7 @@ size_t rsd_pointer(rsound_t *rsound)
 
 size_t rsd_get_avail(rsound_t *rd)
 {
-   assert(rd != NULL);
+   retro_assert(rd != NULL);
    int ptr;
    ptr = rsnd_get_ptr(rd);
    return rd->buffer_size - ptr;
@@ -1523,7 +1524,7 @@ size_t rsd_get_avail(rsound_t *rd)
 
 size_t rsd_delay(rsound_t *rd)
 {
-   assert(rd != NULL);
+   retro_assert(rd != NULL);
    int ptr = rsnd_get_delay(rd);
    if ( ptr < 0 )
       ptr = 0;
@@ -1533,27 +1534,28 @@ size_t rsd_delay(rsound_t *rd)
 
 size_t rsd_delay_ms(rsound_t* rd)
 {
-   assert(rd);
-   assert(rd->rate > 0 && rd->channels > 0);
+   retro_assert(rd);
+   retro_assert(rd->rate > 0 && rd->channels > 0);
 
    return (rsd_delay(rd) * 1000) / ( rd->rate * rd->channels * rd->samplesize );
 }
 
 int rsd_pause(rsound_t* rsound, int enable)
 {
-   assert(rsound != NULL);
+   retro_assert(rsound != NULL);
    if ( enable )
       return rsd_stop(rsound);
-   else
-      return rsd_start(rsound);
+
+   return rsd_start(rsound);
 }
 
 int rsd_init(rsound_t** rsound)
 {
-   assert(rsound != NULL);
    *rsound = calloc(1, sizeof(rsound_t));
    if ( *rsound == NULL )
       return -1;
+
+   retro_assert(rsound != NULL);
 
    (*rsound)->conn.socket = -1;
    (*rsound)->conn.ctl_socket = -1;
@@ -1616,7 +1618,7 @@ int rsd_simple_start(rsound_t** rsound, const char* host, const char* port, cons
 
 void rsd_set_callback(rsound_t *rsound, rsd_audio_callback_t audio_cb, rsd_error_callback_t err_cb, size_t max_size, void *userdata)
 {
-   assert(rsound != NULL);
+   retro_assert(rsound != NULL);
 
    rsound->audio_callback = audio_cb;
    rsound->error_callback = err_cb;
@@ -1624,7 +1626,9 @@ void rsd_set_callback(rsound_t *rsound, rsd_audio_callback_t audio_cb, rsd_error
    rsound->cb_data = userdata;
 
    if (rsound->audio_callback)
-      assert(rsound->error_callback);
+   {
+      retro_assert(rsound->error_callback);
+   }
 }
 
 void rsd_callback_lock(rsound_t *rsound)
@@ -1639,7 +1643,7 @@ void rsd_callback_unlock(rsound_t *rsound)
 
 int rsd_free(rsound_t *rsound)
 {
-   assert(rsound != NULL);
+   retro_assert(rsound != NULL);
    if (rsound->fifo_buffer)
       fifo_free(rsound->fifo_buffer);
    if (rsound->host)

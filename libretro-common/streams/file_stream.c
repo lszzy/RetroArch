@@ -1,4 +1,4 @@
-/* Copyright  (C) 2010-2016 The RetroArch team
+/* Copyright  (C) 2010-2017 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this file (file_stream.c).
@@ -38,22 +38,15 @@
 #    include <direct.h>
 #    include <windows.h>
 #  endif
-#elif defined(VITA)
-#  include <psp2/io/fcntl.h>
-#  include <psp2/io/dirent.h>
-
-#define PSP_O_RDONLY SCE_O_RDONLY
-#define PSP_O_RDWR   SCE_O_RDWR
-#define PSP_O_CREAT  SCE_O_CREAT
-#define PSP_O_WRONLY SCE_O_WRONLY
-#define PSP_O_TRUNC  SCE_O_TRUNC
 #else
 #  if defined(PSP)
 #    include <pspiofilemgr.h>
 #  endif
 #  include <sys/types.h>
 #  include <sys/stat.h>
+#  if !defined(VITA)
 #  include <dirent.h>
+#  endif
 #  include <unistd.h>
 #endif
 
@@ -70,15 +63,23 @@
 
 #include <streams/file_stream.h>
 #include <memmap.h>
+#include <retro_miscellaneous.h>
 
 struct RFILE
 {
    unsigned hints;
-#if defined(PSP) || defined(VITA)
+   char *ext;
+   int64_t size;
+#if defined(PSP)
    SceUID fd;
 #else
 
 #define HAVE_BUFFERED_IO 1
+
+#define MODE_STR_READ "r"
+#define MODE_STR_READ_UNBUF "rb"
+#define MODE_STR_WRITE_UNBUF "wb"
+#define MODE_STR_WRITE_PLUS "w+"
 
 #if defined(HAVE_BUFFERED_IO)
    FILE *fp;
@@ -101,6 +102,33 @@ int filestream_get_fd(RFILE *stream)
       return fileno(stream->fp);
 #endif
    return stream->fd;
+}
+
+const char *filestream_get_ext(RFILE *stream)
+{
+   if (!stream)
+      return NULL;
+   return stream->ext;
+}
+
+int64_t filestream_get_size(RFILE *stream)
+{
+   if (!stream)
+      return 0;
+   return stream->size;
+}
+
+void filestream_set_size(RFILE *stream)
+{
+   if (!stream)
+      return;
+
+   filestream_seek(stream, 0, SEEK_SET);
+   filestream_seek(stream, 0, SEEK_END);
+
+   stream->size = filestream_tell(stream);
+
+   filestream_seek(stream, 0, SEEK_SET);
 }
 
 RFILE *filestream_open(const char *path, unsigned mode, ssize_t len)
@@ -130,39 +158,39 @@ RFILE *filestream_open(const char *path, unsigned mode, ssize_t len)
    switch (mode & 0xff)
    {
       case RFILE_MODE_READ_TEXT:
-#if defined(VITA) || defined(PSP)
-         mode_int = 0777;
+#if  defined(PSP)
+         mode_int = 0666;
          flags    = PSP_O_RDONLY;
 #else
 #if defined(HAVE_BUFFERED_IO)
          if ((stream->hints & RFILE_HINT_UNBUFFERED) == 0)
-            mode_str = "r";
+            mode_str = MODE_STR_READ;
 #endif
          /* No "else" here */
          flags    = O_RDONLY;
 #endif
          break;
       case RFILE_MODE_READ:
-#if defined(VITA) || defined(PSP)
-         mode_int = 0777;
+#if  defined(PSP)
+         mode_int = 0666;
          flags    = PSP_O_RDONLY;
 #else
 #if defined(HAVE_BUFFERED_IO)
          if ((stream->hints & RFILE_HINT_UNBUFFERED) == 0)
-            mode_str = "rb";
+            mode_str = MODE_STR_READ_UNBUF;
 #endif
          /* No "else" here */
          flags    = O_RDONLY;
 #endif
          break;
       case RFILE_MODE_WRITE:
-#if defined(VITA) || defined(PSP)
-         mode_int = 0777;
+#if  defined(PSP)
+         mode_int = 0666;
          flags    = PSP_O_CREAT | PSP_O_WRONLY | PSP_O_TRUNC;
 #else
 #if defined(HAVE_BUFFERED_IO)
          if ((stream->hints & RFILE_HINT_UNBUFFERED) == 0)
-            mode_str = "wb";
+            mode_str = MODE_STR_WRITE_UNBUF;
 #endif
          else
          {
@@ -174,13 +202,13 @@ RFILE *filestream_open(const char *path, unsigned mode, ssize_t len)
 #endif
          break;
       case RFILE_MODE_READ_WRITE:
-#if defined(VITA) || defined(PSP)
-         mode_int = 0777;
+#if  defined(PSP)
+         mode_int = 0666;
          flags    = PSP_O_RDWR;
 #else
 #if defined(HAVE_BUFFERED_IO)
          if ((stream->hints & RFILE_HINT_UNBUFFERED) == 0)
-            mode_str = "w+";
+            mode_str = MODE_STR_WRITE_PLUS;
 #endif
          else
          {
@@ -193,11 +221,11 @@ RFILE *filestream_open(const char *path, unsigned mode, ssize_t len)
          break;
    }
 
-#if defined(VITA) || defined(PSP)
+#if  defined(PSP)
    stream->fd = sceIoOpen(path, flags, mode_int);
 #else
 #if defined(HAVE_BUFFERED_IO)
-   if ((stream->hints & RFILE_HINT_UNBUFFERED) == 0)
+   if ((stream->hints & RFILE_HINT_UNBUFFERED) == 0 && mode_str)
    {
       stream->fp = fopen(path, mode_str);
       if (!stream->fp)
@@ -206,7 +234,8 @@ RFILE *filestream_open(const char *path, unsigned mode, ssize_t len)
    else
 #endif
    {
-      stream->fd = open(path, flags);
+      /* FIXME: HAVE_BUFFERED_IO is always 1, but if it is ever changed, open() needs to be changed to _wopen() for WIndows. */
+      stream->fd = open(path, flags, mode_int);
       if (stream->fd == -1)
          goto error;
 #ifdef HAVE_MMAP
@@ -231,10 +260,17 @@ RFILE *filestream_open(const char *path, unsigned mode, ssize_t len)
    }
 #endif
 
-#if defined(VITA) || defined(PSP)
+#if  defined(PSP)
    if (stream->fd == -1)
       goto error;
 #endif
+
+   {
+      const char *ld = (const char*)strrchr(path, '.');
+      stream->ext    = strdup(ld ? ld + 1 : "");
+   }
+
+   filestream_set_size(stream);
 
    return stream;
 
@@ -283,7 +319,11 @@ char *filestream_gets(RFILE *stream, char *s, size_t len)
    if (!stream)
       return NULL;
 #if defined(HAVE_BUFFERED_IO)
-   return fgets(s, len, stream->fp);
+   return fgets(s, (int)len, stream->fp);
+#elif  defined(PSP)
+   if(filestream_read(stream,s,len)==len)
+      return s;
+   return NULL;
 #else
    return gets(s);
 #endif
@@ -297,7 +337,7 @@ int filestream_getc(RFILE *stream)
       return 0;
 #if defined(HAVE_BUFFERED_IO)
     return fgetc(stream->fp);
-#elif defined(VITA) || defined(PSP)
+#elif  defined(PSP)
     if(filestream_read(stream, &c, 1) == 1)
        return (int)c;
     return EOF;
@@ -311,7 +351,7 @@ ssize_t filestream_seek(RFILE *stream, ssize_t offset, int whence)
    if (!stream)
       goto error;
 
-#if defined(VITA) || defined(PSP)
+#if  defined(PSP)
    if (sceIoLseek(stream->fd, (SceOff)offset, whence) == -1)
       goto error;
 #else
@@ -383,7 +423,7 @@ ssize_t filestream_tell(RFILE *stream)
 {
    if (!stream)
       goto error;
-#if defined(VITA) || defined(PSP)
+#if  defined(PSP)
   if (sceIoLseek(stream->fd, 0, SEEK_CUR) < 0)
      goto error;
 #else
@@ -416,7 +456,7 @@ ssize_t filestream_read(RFILE *stream, void *s, size_t len)
 {
    if (!stream || !s)
       goto error;
-#if defined(VITA) || defined(PSP)
+#if  defined(PSP)
    return sceIoRead(stream->fd, s, len);
 #else
 #if defined(HAVE_BUFFERED_IO)
@@ -445,11 +485,20 @@ error:
    return -1;
 }
 
+int filestream_flush(RFILE *stream)
+{
+#if defined(HAVE_BUFFERED_IO)
+   return fflush(stream->fp);
+#else
+   return 0;
+#endif
+}
+
 ssize_t filestream_write(RFILE *stream, const void *s, size_t len)
 {
    if (!stream)
       goto error;
-#if defined(VITA) || defined(PSP)
+#if  defined(PSP)
    return sceIoWrite(stream->fd, s, len);
 #else
 #if defined(HAVE_BUFFERED_IO)
@@ -480,12 +529,48 @@ int filestream_putc(RFILE *stream, int c)
 #endif
 }
 
+int filestream_vprintf(RFILE *stream, const char* format, va_list args)
+{
+	static char buffer[8 * 1024];
+	int numChars = vsprintf(buffer, format, args);
+
+	if (numChars < 0)
+		return -1;
+	else if (numChars == 0)
+		return 0;
+
+	return filestream_write(stream, buffer, numChars);
+}
+
+int filestream_printf(RFILE *stream, const char* format, ...)
+{
+	va_list vl;
+   int result;
+	va_start(vl, format);
+	result = filestream_vprintf(stream, format, vl);
+	va_end(vl);
+	return result;
+}
+
+int filestream_error(RFILE *stream)
+{
+#if defined(HAVE_BUFFERED_IO)
+	return ferror(stream->fp);
+#else
+   /* stub */
+   return 0;
+#endif
+}
+
 int filestream_close(RFILE *stream)
 {
    if (!stream)
       goto error;
 
-#if defined(VITA) || defined(PSP)
+   if (stream->ext)
+      free(stream->ext);
+
+#if  defined(PSP)
    if (stream->fd > 0)
       sceIoClose(stream->fd);
 #else
@@ -563,7 +648,7 @@ int filestream_read_file(const char *path, void **buf, ssize_t *len)
 
    /* Allow for easy reading of strings to be safe.
     * Will only work with sane character formatting (Unix). */
-   ((char*)content_buf)[content_buf_size] = '\0';
+   ((char*)content_buf)[ret] = '\0';
 
    if (len)
       *len = ret;

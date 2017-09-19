@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -20,7 +20,6 @@
 #include <queues/fifo_queue.h>
 
 #include "../audio_driver.h"
-#include "../../configuration.h"
 
 #include "../../defines/ps3_defines.h"
 
@@ -52,7 +51,7 @@ static void event_loop(uint64_t data)
    sys_event_queue_t id;
    sys_ipc_key_t key;
    sys_event_t event;
-   ps3_audio_t *aud = data;
+   ps3_audio_t *aud = (ps3_audio_t*)(uintptr_t)data;
 
    cellAudioCreateNotifyEventQueue(&id, &key);
    cellAudioSetNotifyEventQueue(key);
@@ -78,23 +77,23 @@ static void event_loop(uint64_t data)
 }
 
 static void *ps3_audio_init(const char *device,
-      unsigned rate, unsigned latency)
+      unsigned rate, unsigned latency,
+      unsigned block_frames,
+      unsigned *new_rate)
 {
    CellAudioPortParam params;
-   ps3_audio_t *data = NULL;
+   ps3_audio_t *data = calloc(1, sizeof(*data));
+   if (!data)
+      return NULL;
 
    (void)latency;
    (void)device;
    (void)rate;
 
-   data = calloc(1, sizeof(*data));
-   if (!data)
-      return NULL;
-
    cellAudioInit();
 
    params.numChannels = AUDIO_CHANNELS;
-   params.numBlocks = AUDIO_BLOCKS;
+   params.numBlocks   = AUDIO_BLOCKS;
 #if 0
 #ifdef HAVE_HEADSET
    if(global->console.sound.mode == SOUND_MODE_HEADSET)
@@ -178,7 +177,7 @@ static bool ps3_audio_stop(void *data)
    return true;
 }
 
-static bool ps3_audio_start(void *data)
+static bool ps3_audio_start(void *data, bool is_shutdown)
 {
    ps3_audio_t *aud = data;
    if (!aud->started)
@@ -210,7 +209,7 @@ static void ps3_audio_free(void *data)
    ps3_audio_t *aud = data;
 
    aud->quit_thread = true;
-   ps3_audio_start(aud);
+   ps3_audio_start(aud, false);
    sys_ppu_thread_join(aud->thread, &val);
 
    ps3_audio_stop(aud);

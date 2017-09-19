@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *  Copyright (C) 2015-     - Swizzy
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
@@ -32,18 +32,18 @@
 
 #include "../menu_driver.h"
 #include "../menu_animation.h"
-#include "../menu_entry.h"
+#include "../widgets/menu_entry.h"
 #include "../menu_entries.h"
 #include "../menu_input.h"
-#include "../menu_navigation.h"
 #include "../menu_setting.h"
-#include "../menu_display.h"
+#include "../widgets/menu_input_dialog.h"
 
-#include "../../gfx/video_context_driver.h"
+#include "../../gfx/video_driver.h"
 
-#include "../../general.h"
+#include "../../configuration.h"
+#include "../../retroarch.h"
 
-#include "../../gfx/d3d/d3d.h"
+#include "../../gfx/drivers/d3d.h"
 
 #define XUI_CONTROL_NAVIGATE_OK (XUI_CONTROL_NAVIGATE_RIGHT + 1)
 
@@ -63,7 +63,8 @@ HXUIOBJ m_background;
 HXUIOBJ m_back;
 HXUIOBJ root_menu;
 HXUIOBJ current_menu;
-static msg_queue_t *xui_msg_queue;
+static msg_queue_t *xui_msg_queue = NULL;
+static uint64_t xui_frame_count   = 0;
 
 class CRetroArch : public CXuiModule
 {
@@ -160,9 +161,10 @@ HRESULT CRetroArchMain::OnInit(XUIMessageInit * pInitData, BOOL& bHandled)
 
    if (XuiHandleIsValid(m_menutitlebottom))
    {
-	   char str[PATH_MAX_LENGTH] = {0};
+      char str[PATH_MAX_LENGTH] = {0};
 
-      if (menu_entries_get_core_title(str, sizeof(str)) == 0)
+      if (
+            menu_entries_get_core_title(str, sizeof(str)) == 0)
       {
          mbstowcs(strw_buffer, str, sizeof(strw_buffer) / sizeof(wchar_t));
          XuiTextElementSetText(m_menutitlebottom, strw_buffer);
@@ -266,7 +268,7 @@ cleanup:
    return hr;
 }
 
-static void* xui_init(void **userdata)
+static void* xui_init(void **userdata, bool video_is_threaded)
 {
    HRESULT hr;
    d3d_video_t *d3d            = NULL;
@@ -284,15 +286,15 @@ static void* xui_init(void **userdata)
    if (d3d->resolution_hd_enable)
       RARCH_LOG("HD menus enabled.\n");
 
-   video_info.vsync        = settings->video.vsync;
+   video_info.vsync        = settings->bools.video_vsync;
    video_info.force_aspect = false;
-   video_info.smooth       = settings->video.smooth;
+   video_info.smooth       = settings->bools.video_smooth;
    video_info.input_scale  = 2;
    video_info.fullscreen   = true;
    video_info.rgb32        = false;
 
    d3d_make_d3dpp(d3d, &video_info, &d3dpp);
-   
+
    hr = app.InitShared(d3d->dev, &d3dpp,
          (PFN_XUITEXTURELOADER)XuiTextureLoader);
 
@@ -341,7 +343,7 @@ static void* xui_init(void **userdata)
    }
 
    video_driver_set_texture_frame(NULL,
-            true, 0, 0, 1.0f);
+         true, 0, 0, 1.0f);
 
    xui_msg_queue = msg_queue_new(16);
 
@@ -357,6 +359,8 @@ static void xui_free(void *data)
    (void)data;
    app.Uninit();
 
+   xui_frame_count = 0;
+
    if (xui_msg_queue)
       msg_queue_free(xui_msg_queue);
 }
@@ -371,7 +375,7 @@ static void xui_render_message(const char *msg)
 
    if (!d3d)
       return;
-   
+
    list = string_split(msg, "\n");
 
    if (!list)
@@ -399,7 +403,7 @@ end:
    string_list_free(list);
 }
 
-static void xui_frame(void *data)
+static void xui_frame(void *data, video_frame_info_t *video_info)
 {
    XUIMessage msg;
    XUIMessageRender msgRender;
@@ -408,7 +412,7 @@ static void xui_frame(void *data)
    const char *message   = NULL;
    D3DVIEWPORT vp_full   = {0};
    d3d_video_t *d3d      = (d3d_video_t*)video_driver_get_ptr(false);
-   
+
    if (!d3d)
       return;
 
@@ -417,7 +421,9 @@ static void xui_frame(void *data)
    if (!d3dr)
       return;
 
-   menu_display_set_viewport();
+   xui_frame_count++;
+
+   menu_display_set_viewport(video_info->width, video_info->height);
 
    app.RunFrame();
    XuiTimersRun();
@@ -431,21 +437,24 @@ static void xui_frame(void *data)
 
    XuiRenderSetViewTransform( app.GetDC(), &matOrigView );
 
-   runloop_ctl(RUNLOOP_CTL_MSG_QUEUE_PULL, &message);
+#if 0
+   /* TODO/FIXME - update this code */
+   rarch_ctl(RARCH_CTL_MSG_QUEUE_PULL, &message);
 
    if (message)
       xui_render_message(message);
    else
    {
-      runloop_ctl(RUNLOOP_CTL_MSG_QUEUE_PULL, &message);
+      rarch_ctl(RARCH_CTL_MSG_QUEUE_PULL, &message);
 
       if (message)
          xui_render_message(message);
    }
+#endif
 
    XuiRenderEnd( app.GetDC() );
 
-   menu_display_unset_viewport();
+   menu_display_unset_viewport(video_info->width, video_info->height);
 }
 
 static void blit_line(int x, int y, const char *message, bool green)
@@ -454,10 +463,13 @@ static void blit_line(int x, int y, const char *message, bool green)
 
 static void xui_render_background(void)
 {
+#if 0
+   /* TODO/FIXME - refactor this */
    if (menu_display_libretro_running())
-		XuiElementSetShow(m_background, FALSE);
-	else
-		XuiElementSetShow(m_background, TRUE);
+      XuiElementSetShow(m_background, FALSE);
+   else
+#endif
+      XuiElementSetShow(m_background, TRUE);
 }
 
 static void xui_render_messagebox(void *data, const char *message)
@@ -523,115 +535,106 @@ static void xui_set_list_text(int index, const wchar_t* leftText,
    }
 }
 
-static void xui_render(void *data)
+static void xui_render(void *data, bool is_idle)
 {
-   uint64_t *frame_count;
-   bool display_kb, msg_force;
-   unsigned fb_width;
-	size_t end, i, selection;
-	char title[PATH_MAX_LENGTH] = {0};
-	const char *dir             = NULL;
+   size_t end, i, selection, fb_pitch;
+   unsigned fb_width, fb_height;
+   char title[PATH_MAX_LENGTH] = {0};
+   const char *dir             = NULL;
    const char *label           = NULL;
-	unsigned menu_type          = 0;
+   unsigned menu_type          = 0;
+   uint64_t frame_count        = xui_frame_count;
+   bool              msg_force = menu_display_get_msg_force();
 
-   frame_count = video_driver_get_frame_count_ptr();
-
-   fb_width = menu_display_get_width();
-   msg_force = menu_display_get_msg_force();
+   menu_display_get_fb_size(&fb_width, &fb_height,
+         &fb_pitch);
 
    if (
          menu_entries_ctl(MENU_ENTRIES_CTL_NEEDS_REFRESH, NULL) 
-         && menu_driver_ctl(RARCH_MENU_CTL_IS_ALIVE, NULL)
+         && menu_driver_is_alive()
          && !msg_force
       )
-		return;
+      return;
 
    menu_display_unset_framebuffer_dirty_flag();
    menu_animation_ctl(MENU_ANIMATION_CTL_CLEAR_ACTIVE, NULL);
 
-	xui_render_background();
+   xui_render_background();
 
-	if (XuiHandleIsValid(m_menutitle))
-	{
+   if (XuiHandleIsValid(m_menutitle))
+   {
+      menu_animation_ctx_ticker_t ticker;
       menu_entries_get_title(title, sizeof(title));
-		mbstowcs(strw_buffer, title, sizeof(strw_buffer) / sizeof(wchar_t));
-		XuiTextElementSetText(m_menutitle, strw_buffer);
-		menu_animation_ticker_str(title, RXUI_TERM_WIDTH(fb_width) - 3,
-            (unsigned int)*frame_count / 15, title, true);
-	}
+      mbstowcs(strw_buffer, title, sizeof(strw_buffer) / sizeof(wchar_t));
+      XuiTextElementSetText(m_menutitle, strw_buffer);
 
-	if (XuiHandleIsValid(m_menutitle))
-	{
-      if (menu_entries_get_core_title(title, sizeof(title)) == 0)
+	  ticker.s        = title;
+	  ticker.len      = RXUI_TERM_WIDTH(fb_width) - 3;
+	  ticker.idx      = (unsigned int)frame_count / 15;
+	  ticker.str      = title;
+	  ticker.selected = true;
+
+      menu_animation_ticker(&ticker);
+   }
+
+   if (XuiHandleIsValid(m_menutitle))
+   {
+      if (
+            menu_entries_get_core_title(title, sizeof(title)) == 0)
       {
          mbstowcs(strw_buffer, title, sizeof(strw_buffer) / sizeof(wchar_t));
          XuiTextElementSetText(m_menutitlebottom, strw_buffer);
       }
-	}
+   }
 
-	end = menu_entries_get_end();
-	for (i = 0; i < end; i++)
+   end = menu_entries_get_end();
+   for (i = 0; i < end; i++)
    {
       char entry_path[PATH_MAX_LENGTH]     = {0};
       char entry_value[PATH_MAX_LENGTH]    = {0};
       wchar_t msg_right[PATH_MAX_LENGTH]   = {0};
       wchar_t msg_left[PATH_MAX_LENGTH]    = {0};
 
-      menu_entry_get_value(i, entry_value, sizeof(entry_value));
+      menu_entry_get_value(i, NULL, entry_value, sizeof(entry_value));
       menu_entry_get_path(i, entry_path, sizeof(entry_path));
 
       mbstowcs(msg_left,  entry_path,  sizeof(msg_left)  / sizeof(wchar_t));
       mbstowcs(msg_right, entry_value, sizeof(msg_right) / sizeof(wchar_t));
       xui_set_list_text(i, msg_left, msg_right);
    }
-   if (!menu_navigation_ctl(MENU_NAVIGATION_CTL_GET_SELECTION, &selection))
-      return;
-	XuiListSetCurSelVisible(m_menulist, selection);
 
-   menu_input_ctl(MENU_INPUT_CTL_KEYBOARD_DISPLAY, &display_kb);
+   selection = menu_navigation_get_selection();
 
-   if (display_kb)
-	{
-		char msg[1024]  = {0};
-      const char *str = NULL, *label = NULL;
-      menu_input_ctl(MENU_INPUT_CTL_KEYBOARD_BUFF_PTR, &str);
-      menu_input_ctl(MENU_INPUT_CTL_KEYBOARD_LABEL,    &label);
+   XuiListSetCurSelVisible(m_menulist, selection);
 
-		if (!str)
-			str = "";
+   if (menu_input_dialog_get_display_kb())
+   {
+      char msg[1024]    = {0};
+      const char *str   = menu_input_dialog_get_buffer();
+      const char *label = menu_input_dialog_get_label_buffer();
+
       snprintf(msg, sizeof(msg), "%s\n%s", label, str);
-		xui_render_messagebox(msg);			
-	}
+      xui_render_messagebox(NULL, msg);			
+   }
 }
 
-static void xui_populate_entries(const char *path,
+static void xui_populate_entries(void *data,
+      const char *path,
       const char *label, unsigned i)
 {
-   size_t selection;
-   if (!menu_navigation_ctl(MENU_NAVIGATION_CTL_GET_SELECTION, &selection))
-      return;
-
-   (void)label;
-   (void)path;
-
+   size_t selection = menu_navigation_get_selection();
    XuiListSetCurSelVisible(m_menulist, selection);
 }
 
 static void xui_navigation_clear(void *data, bool pending_push)
 {
-   size_t selection;
-   if (!menu_navigation_ctl(MENU_NAVIGATION_CTL_GET_SELECTION, &selection))
-      return;
-
+   size_t selection = menu_navigation_get_selection();
    XuiListSetCurSelVisible(m_menulist, selection);
 }
 
 static void xui_navigation_set_visible(void *data)
 {
-   size_t selection;
-   if (!menu_navigation_ctl(MENU_NAVIGATION_CTL_GET_SELECTION, &selection))
-      return;
-
+   size_t selection = menu_navigation_get_selection();
    XuiListSetCurSelVisible(m_menulist, selection);
 }
 
@@ -642,7 +645,11 @@ static void xui_navigation_alphabet(void *data, size_t *ptr_out)
 
 static void xui_list_insert(void *data,
       file_list_t *list,
-      const char *path, const char *, size_t list_size)
+      const char *path,
+      const char *fullpath,
+      const char *unused,
+	  size_t list_size,
+	  unsigned entry_type)
 {
    wchar_t buf[PATH_MAX_LENGTH] = {0};
 
@@ -651,16 +658,17 @@ static void xui_list_insert(void *data,
    XuiListSetText(m_menulist, list_size, buf);
 }
 
-static void xui_list_free(file_list_t *list, size_t idx,
+static void xui_list_free(
+      file_list_t *list, size_t idx,
       size_t list_size)
 {
    int x = XuiListGetItemCount( m_menulist );
 
    (void)idx;
 
-   if( list_size > x)
+   if (list_size > (unsigned)x)
       list_size = x;
-   if( list_size > 0)
+   if (list_size > 0)
       XuiListDeleteItems(m_menulist, 0, list_size);
 }
 
@@ -677,7 +685,7 @@ static void xui_list_set_selection(void *data, file_list_t *list)
             file_list_get_directory_ptr(list));
 }
 
-static int xui_environ(enum menu_environ_cb type, void *data)
+static int xui_environ(enum menu_environ_cb type, void *data, void *userdata)
 {
    switch (type)
    {
@@ -697,10 +705,10 @@ menu_ctx_driver_t menu_ctx_xui = {
    xui_frame,
    xui_init,
    xui_free,
-   NULL,
-   NULL,
+   NULL,    /* context_reset */
+   NULL,    /* context_destroy */
    xui_populate_entries,
-   NULL,
+   NULL,    /* toggle */
    xui_navigation_clear,
    xui_navigation_set_visible,
    xui_navigation_set_visible,
@@ -710,19 +718,25 @@ menu_ctx_driver_t menu_ctx_xui = {
    xui_navigation_alphabet,
    generic_menu_init_list,
    xui_list_insert,
+   NULL,          /* list_prepend */
    xui_list_free,
    xui_list_clear,
-   NULL,
-   NULL,
-   NULL,
-   NULL,
-   NULL,
+   NULL,          /* list_cache */
+   NULL,          /* list_push */
+   NULL,          /* list_get_selection */
+   NULL,          /* list_get_size */
+   NULL,          /* list_get_entry */
    xui_list_set_selection,
-   NULL,
-   NULL,
+   NULL,          /* bind_init */
+   NULL,          /* load_image */
    "xui",
    xui_environ,
-   NULL,
-   NULL,
-   NULL
+   NULL,          /* pointer_tap */
+   NULL,          /* update_thumbnail_path */
+   NULL,          /* update_thumbnail_image */
+   NULL,          /* set_thumbnail_system */
+   NULL,          /* set_thumbnail_content */
+   NULL,          /* osk_ptr_at_pos */
+   NULL,          /* update_savestate_thumbnail_path */
+   NULL           /* update_savestate_thumbnail_image */
 };

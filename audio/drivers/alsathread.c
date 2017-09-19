@@ -22,14 +22,13 @@
 
 #include <rthreads/rthreads.h>
 #include <queues/fifo_queue.h>
+#include <string/stdstring.h>
 
 #include "../audio_driver.h"
-#include "../../configuration.h"
 #include "../../verbosity.h"
 
-#define TRY_ALSA(x) if (x < 0) { \
-                  goto error; \
-               }
+#define TRY_ALSA(x) if (x < 0) \
+                  goto error;
 
 typedef struct alsa_thread
 {
@@ -53,8 +52,8 @@ typedef struct alsa_thread
 static void alsa_worker_thread(void *data)
 {
    alsa_thread_t *alsa = (alsa_thread_t*)data;
+   uint8_t        *buf = (uint8_t *)calloc(1, alsa->period_size);
 
-   uint8_t *buf = (uint8_t *)calloc(1, alsa->period_size);
    if (!buf)
    {
       RARCH_ERR("failed to allocate audio buffer");
@@ -92,7 +91,7 @@ static void alsa_worker_thread(void *data)
       }
       else if (frames < 0)
       {
-         RARCH_ERR("[ALSA]: Unknown error occured (%s).\n",
+         RARCH_ERR("[ALSA]: Unknown error occurred (%s).\n",
                snd_strerror(frames));
          break;
       }
@@ -155,21 +154,20 @@ static void alsa_thread_free(void *data)
 }
 
 static void *alsa_thread_init(const char *device,
-      unsigned rate, unsigned latency)
+      unsigned rate, unsigned latency,
+      unsigned block_frames,
+      unsigned *new_rate)
 {
-   alsa_thread_t *alsa = (alsa_thread_t*)calloc(1, sizeof(alsa_thread_t));
-
-   snd_pcm_hw_params_t *params = NULL;
-   snd_pcm_sw_params_t *sw_params = NULL;
-
-   const char *alsa_dev = device ? device : "default";
-
-   unsigned latency_usec = latency * 1000 / 2;
-
-   unsigned channels = 2;
-   unsigned periods = 4;
    snd_pcm_uframes_t buffer_size;
    snd_pcm_format_t format;
+   snd_pcm_hw_params_t *params    = NULL;
+   snd_pcm_sw_params_t *sw_params = NULL;
+   const char *alsa_dev           = device ? device : "default";
+   unsigned latency_usec          = latency * 1000 / 2;
+   unsigned channels              = 2;
+   unsigned periods               = 4;
+   alsa_thread_t            *alsa = (alsa_thread_t*)
+      calloc(1, sizeof(alsa_thread_t));
 
    if (!alsa)
       return NULL;
@@ -286,7 +284,8 @@ static ssize_t alsa_thread_write(void *data, const void *buf, size_t size)
          else
          {
             size_t write_amt = MIN(size - written, avail);
-            fifo_write(alsa->buffer, (const char*)buf + written, write_amt);
+            fifo_write(alsa->buffer,
+                  (const char*)buf + written, write_amt);
             slock_unlock(alsa->fifo_lock);
             written += write_amt;
          }
@@ -318,7 +317,7 @@ static void alsa_thread_set_nonblock_state(void *data, bool state)
    alsa->nonblock = state;
 }
 
-static bool alsa_thread_start(void *data)
+static bool alsa_thread_start(void *data, bool is_shutdown)
 {
    alsa_thread_t *alsa = (alsa_thread_t*)data;
 
@@ -371,7 +370,7 @@ static void *alsa_device_list_new(void *data)
       /* description of device IOID - input / output identifcation
        * ("Input" or "Output"), NULL means both) */
 
-      if (!io || !strcmp(io,"Output"))
+      if (!io || (string_is_equal_fast(io,"Output", 6)))
          string_list_append(s, name, attr);
 
       if (name)

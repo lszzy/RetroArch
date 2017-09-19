@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -23,12 +23,11 @@
 
 #include <libretro.h>
 
-#include "../../driver.h"
+#include "../input_driver.h"
 
 #define MAX_PADS 4
 
 static uint64_t state[MAX_PADS];
-static uint64_t lifecycle_state;
 
 static void xenon360_input_poll(void *data)
 {
@@ -56,15 +55,15 @@ static void xenon360_input_poll(void *data)
    }
 }
 
-static int16_t xenon360_input_state(void *data, const struct retro_keybind **binds,
+static int16_t xenon360_input_state(void *data,
+      rarch_joypad_info_t joypad_info,
+      const struct retro_keybind **binds,
       bool port, unsigned device,
       unsigned idx, unsigned id)
 {
-   (void)data;
-   (void)idx;
-   unsigned user = port;
+   unsigned user   = port;
    uint64_t button = binds[user][id].joykey;
-   int16_t retval = 0;
+   int16_t retval  = 0;
 
    if(user < MAX_PADS)
    {
@@ -72,6 +71,8 @@ static int16_t xenon360_input_state(void *data, const struct retro_keybind **bin
       {
          case RETRO_DEVICE_JOYPAD:
             retval = (state[user] & button) ? 1 : 0;
+            break;
+         default:
             break;
       }
    }
@@ -84,22 +85,14 @@ static void xenon360_input_free_input(void *data)
    (void)data;
 }
 
-static void* xenon360_input_init(void)
+static void* xenon360_input_init(const char *joypad_driver)
 {
    return (void*)-1;
 }
 
-static bool xenon360_input_key_pressed(void *data, int key)
-{
-   if (lifecycle_state & (UINT64_C(1) << key))
-      return true;
-
-   return false;
-}
-
 static bool xenon360_input_meta_key_pressed(void *data, int key)
 {
-   return (lifecycle_state & (UINT64_C(1) << key));
+   return (state & (UINT64_C(1) << key));
 }
 
 static uint64_t xenon360_input_get_capabilities(void *data)
@@ -132,7 +125,6 @@ input_driver_t input_xenon360 = {
    xenon360_input_init,
    xenon360_input_poll,
    xenon360_input_state,
-   xenon360_input_key_pressed,
    xenon360_input_meta_key_pressed,
    xenon360_input_free_input,
    NULL,

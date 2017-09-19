@@ -1,4 +1,4 @@
-/* Copyright  (C) 2010-2016 The RetroArch team
+/* Copyright  (C) 2010-2017 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this file (file_stream.h).
@@ -31,6 +31,8 @@
 #include <retro_common_api.h>
 #include <boolean.h>
 
+#include <stdarg.h>
+
 RETRO_BEGIN_DECLS
 
 typedef struct RFILE RFILE;
@@ -46,6 +48,12 @@ enum
    RFILE_HINT_UNBUFFERED = 1<<8,
    RFILE_HINT_MMAP       = 1<<9  /* requires RFILE_MODE_READ */
 };
+
+int64_t filestream_get_size(RFILE *stream);
+
+void filestream_set_size(RFILE *stream);
+
+const char *filestream_get_ext(RFILE *stream);
 
 RFILE *filestream_open(const char *path, unsigned mode, ssize_t len);
 
@@ -75,7 +83,15 @@ bool filestream_write_file(const char *path, const void *data, ssize_t size);
 
 int filestream_putc(RFILE *stream, int c);
 
+int filestream_vprintf(RFILE *stream, const char* format, va_list args);
+
+int filestream_printf(RFILE *stream, const char* format, ...);
+
+int filestream_error(RFILE *stream);
+
 int filestream_get_fd(RFILE *stream);
+
+int filestream_flush(RFILE *stream);
 
 RETRO_END_DECLS
 

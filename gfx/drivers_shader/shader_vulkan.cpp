@@ -1,5 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2016 - Hans-Kristian Arntzen
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -19,12 +20,17 @@
 #include <memory>
 #include <functional>
 #include <utility>
+#include <algorithm>
 #include <string.h>
 #include <math.h>
 
+#include <compat/strl.h>
+#include <formats/image.h>
+#include <retro_miscellaneous.h>
+
 #include "slang_reflection.hpp"
 
-#include "../video_shader_driver.h"
+#include "../video_driver.h"
 #include "../../verbosity.h"
 #include "../../msg_hash.h"
 
@@ -38,13 +44,25 @@ static const uint32_t opaque_frag[] =
 #include "../drivers/vulkan_shaders/opaque.frag.inc"
 ;
 
-static void image_layout_transition(
-      VkCommandBuffer cmd, VkImage image,
+static unsigned num_miplevels(unsigned width, unsigned height)
+{
+   unsigned size   = MAX(width, height);
+   unsigned levels = 0;
+   while (size)
+   {
+      levels++;
+      size >>= 1;
+   }
+   return levels;
+}
+
+static void image_layout_transition_levels(
+      VkCommandBuffer cmd, VkImage image, uint32_t levels,
       VkImageLayout old_layout, VkImageLayout new_layout,
       VkAccessFlags src_access, VkAccessFlags dst_access,
       VkPipelineStageFlags src_stages, VkPipelineStageFlags dst_stages)
 {
-   VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+   VkImageMemoryBarrier barrier        = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
 
    barrier.srcAccessMask               = src_access;
    barrier.dstAccessMask               = dst_access;
@@ -54,8 +72,8 @@ static void image_layout_transition(
    barrier.dstQueueFamilyIndex         = VK_QUEUE_FAMILY_IGNORED;
    barrier.image                       = image;
    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-   barrier.subresourceRange.levelCount = 1;
-   barrier.subresourceRange.layerCount = 1;
+   barrier.subresourceRange.levelCount = levels;
+   barrier.subresourceRange.layerCount = VK_REMAINING_ARRAY_LAYERS;
 
    vkCmdPipelineBarrier(cmd,
          src_stages,
@@ -64,6 +82,18 @@ static void image_layout_transition(
          0, nullptr,
          0, nullptr,
          1, &barrier);
+}
+
+static void image_layout_transition(
+      VkCommandBuffer cmd, VkImage image,
+      VkImageLayout old_layout, VkImageLayout new_layout,
+      VkAccessFlags src_access, VkAccessFlags dst_access,
+      VkPipelineStageFlags src_stages, VkPipelineStageFlags dst_stages)
+{
+   image_layout_transition_levels(cmd, image, VK_REMAINING_MIP_LEVELS,
+         old_layout, new_layout,
+         src_access, dst_access,
+         src_stages, dst_stages);
 }
 
 static uint32_t find_memory_type(
@@ -134,6 +164,8 @@ struct Texture
 {
    vulkan_filter_chain_texture texture;
    vulkan_filter_chain_filter filter;
+   vulkan_filter_chain_filter mip_filter;
+   vulkan_filter_chain_address address;
 };
 
 class DeferredDisposer
@@ -164,11 +196,63 @@ class Buffer
 
       const VkBuffer &get_buffer() const { return buffer; }
 
+      Buffer(Buffer&&) = delete;
+      void operator=(Buffer&&) = delete;
+
    private:
       VkDevice device;
       VkBuffer buffer;
       VkDeviceMemory memory;
       size_t size;
+      void *mapped = nullptr;
+};
+
+class StaticTexture
+{
+   public:
+      StaticTexture(string id,
+            VkDevice device,
+            VkImage image,
+            VkImageView view,
+            VkDeviceMemory memory,
+            unique_ptr<Buffer> buffer,
+            unsigned width, unsigned height,
+            bool linear,
+            bool mipmap,
+            vulkan_filter_chain_address address);
+      ~StaticTexture();
+
+      StaticTexture(StaticTexture&&) = delete;
+      void operator=(StaticTexture&&) = delete;
+
+      void release_staging_buffer()
+      {
+         buffer.reset();
+      }
+
+      void set_id(string name)
+      {
+         id = move(name);
+      }
+
+      const string &get_id() const
+      {
+         return id;
+      }
+
+      const Texture &get_texture() const
+      {
+         return texture;
+      }
+
+   private:
+      VkDevice device;
+      VkImage image;
+      VkImageView view;
+      VkDeviceMemory memory;
+      unique_ptr<Buffer> buffer;
+      string id;
+      Texture texture;
 };
 
 class Framebuffer
@@ -176,7 +260,7 @@ class Framebuffer
    public:
       Framebuffer(VkDevice device,
             const VkPhysicalDeviceMemoryProperties &mem_props,
-            const Size2D &max_size, VkFormat format);
+            const Size2D &max_size, VkFormat format, unsigned max_levels);
 
       ~Framebuffer();
       Framebuffer(Framebuffer&&) = delete;
@@ -193,21 +277,27 @@ class Framebuffer
       void clear(VkCommandBuffer cmd);
       void copy(VkCommandBuffer cmd, VkImage image, VkImageLayout layout);
 
+      unsigned get_levels() const { return levels; }
+      void generate_mips(VkCommandBuffer cmd);
+
    private:
-      VkDevice device = VK_NULL_HANDLE;
       const VkPhysicalDeviceMemoryProperties &memory_properties;
-      VkImage image = VK_NULL_HANDLE;
-      VkImageView view = VK_NULL_HANDLE;
+      VkDevice device     = VK_NULL_HANDLE;
+      VkImage image       = VK_NULL_HANDLE;
+      VkImageView view    = VK_NULL_HANDLE;
+      VkImageView fb_view = VK_NULL_HANDLE;
       Size2D size;
       VkFormat format;
+      unsigned max_levels;
+      unsigned levels           = 0;
 
       VkFramebuffer framebuffer = VK_NULL_HANDLE;
-      VkRenderPass render_pass = VK_NULL_HANDLE;
+      VkRenderPass render_pass  = VK_NULL_HANDLE;
 
       struct
       {
-         size_t size = 0;
-         uint32_t type = 0;
+         size_t size           = 0;
+         uint32_t type         = 0;
          VkDeviceMemory memory = VK_NULL_HANDLE;
       } memory;
 
@@ -229,14 +319,16 @@ struct CommonResources
    size_t ubo_offset = 0;
    size_t ubo_alignment = 1;
 
-   VkSampler samplers[2];
+   VkSampler samplers[VULKAN_FILTER_CHAIN_COUNT][VULKAN_FILTER_CHAIN_COUNT][VULKAN_FILTER_CHAIN_ADDRESS_COUNT];
 
    vector<Texture> original_history;
    vector<Texture> framebuffer_feedback;
+   vector<Texture> pass_outputs;
+   vector<unique_ptr<StaticTexture>> luts;
 
    unordered_map<string, slang_texture_semantic_map> texture_semantic_map;
    unordered_map<string, slang_texture_semantic_map> texture_semantic_uniform_map;
-   unordered_map<string, slang_semantic> semantic_map;
+   unique_ptr<video_shader> shader_preset;
 
    VkDevice device;
 };
@@ -320,6 +412,16 @@ class Pass
          return pass_info.source_filter;
       }
 
+      vulkan_filter_chain_filter get_mip_filter() const
+      {
+         return pass_info.mip_filter;
+      }
+
+      vulkan_filter_chain_address get_address_mode() const
+      {
+         return pass_info.address;
+      }
+
       void set_common_resources(CommonResources *common)
       {
          this->common = common;
@@ -334,6 +436,8 @@ class Pass
       {
          pass_number = pass;
       }
+
+      void add_parameter(unsigned parameter_index, const std::string &id);
 
       void end_frame();
       void allocate_buffers();
@@ -391,6 +495,7 @@ class Pass
       void build_semantic_vec4(uint8_t *data, slang_semantic semantic,
             unsigned width, unsigned height);
       void build_semantic_uint(uint8_t *data, slang_semantic semantic, uint32_t value);
+      void build_semantic_parameter(uint8_t *data, unsigned index, float value);
       void build_semantic_texture_vec4(uint8_t *data,
             slang_texture_semantic semantic,
             unsigned width, unsigned height);
@@ -408,6 +513,23 @@ class Pass
 
       size_t ubo_offset = 0;
       string pass_name;
+
+      struct Parameter
+      {
+         string id;
+         unsigned index;
+         unsigned semantic_index;
+      };
+
+      vector<Parameter> parameters;
+      vector<Parameter> filtered_parameters;
+
+      struct PushConstant
+      {
+         VkShaderStageFlags stages = 0;
+         vector<uint32_t> buffer; // uint32_t to have correct alignment.
+      };
+      PushConstant push;
 };
 
 // struct here since we're implementing the opaque typedef from C.
@@ -419,12 +541,12 @@ struct vulkan_filter_chain
 
       inline void set_shader_preset(unique_ptr<video_shader> shader)
       {
-         shader_preset = move(shader);
+         common.shader_preset = move(shader);
       }
 
       inline video_shader *get_shader_preset()
       {
-         return shader_preset.get();
+         return common.shader_preset.get();
       }
 
       void set_pass_info(unsigned pass,
@@ -441,10 +563,15 @@ struct vulkan_filter_chain
       void build_offscreen_passes(VkCommandBuffer cmd, const VkViewport &vp);
       void build_viewport_pass(VkCommandBuffer cmd,
             const VkViewport &vp, const float *mvp);
+      void end_frame(VkCommandBuffer cmd);
 
       void set_frame_count(uint64_t count);
       void set_frame_count_period(unsigned pass, unsigned period);
       void set_pass_name(unsigned pass, const char *name);
+
+      void add_static_texture(unique_ptr<StaticTexture> texture);
+      void add_parameter(unsigned pass, unsigned parameter_index, const std::string &id);
+      void release_staging_buffers();
 
    private:
       VkDevice device;
@@ -462,8 +589,6 @@ struct vulkan_filter_chain
       Size2D max_input_size;
       vulkan_filter_chain_swapchain_info swapchain_info;
       unsigned current_sync_index;
-
-      unique_ptr<video_shader> shader_preset;
 
       void flush();
 
@@ -508,6 +633,11 @@ void vulkan_filter_chain::set_swapchain_info(
 {
    swapchain_info = info;
    set_num_sync_indices(info.num_indices);
+}
+
+void vulkan_filter_chain::add_parameter(unsigned pass, unsigned index, const std::string &id)
+{
+   passes[pass]->add_parameter(index, id);
 }
 
 void vulkan_filter_chain::set_num_sync_indices(unsigned num_indices)
@@ -571,6 +701,17 @@ void vulkan_filter_chain::set_input_texture(
    input_texture = texture;
 }
 
+void vulkan_filter_chain::add_static_texture(unique_ptr<StaticTexture> texture)
+{
+   common.luts.push_back(move(texture));
+}
+
+void vulkan_filter_chain::release_staging_buffers()
+{
+   for (auto &lut : common.luts)
+      lut->release_staging_buffer();
+}
+
 void vulkan_filter_chain::set_frame_count(uint64_t count)
 {
    for (auto &pass : passes)
@@ -615,6 +756,8 @@ void vulkan_filter_chain::update_history_info()
       source.texture.width    = texture->get_size().width;
       source.texture.height   = texture->get_size().height;
       source.filter           = passes.front()->get_source_filter();
+      source.mip_filter       = passes.front()->get_mip_filter();
+      source.address          = passes.front()->get_address_mode();
       i++;
    }
 }
@@ -637,6 +780,8 @@ void vulkan_filter_chain::update_feedback_info()
       source.texture.width    = fb->get_size().width;
       source.texture.height   = fb->get_size().height;
       source.filter           = passes[i]->get_source_filter();
+      source.mip_filter       = passes[i]->get_mip_filter();
+      source.address          = passes[i]->get_address_mode();
    }
 }
 
@@ -667,7 +812,7 @@ bool vulkan_filter_chain::init_history()
    for (unsigned i = 0; i < required_images; i++)
    {
       original_history.emplace_back(new Framebuffer(device, memory_properties,
-               max_input_size, original_format));
+               max_input_size, original_format, 1));
    }
 
    RARCH_LOG("[Vulkan filter chain]: Using history of %u frames.\n", required_images);
@@ -737,7 +882,6 @@ bool vulkan_filter_chain::init_alias()
 {
    common.texture_semantic_map.clear();
    common.texture_semantic_uniform_map.clear();
-   common.semantic_map.clear();
 
    unsigned i = 0;
    for (auto &pass : passes)
@@ -745,6 +889,8 @@ bool vulkan_filter_chain::init_alias()
       auto &name = pass->get_name();
       if (name.empty())
          continue;
+
+      unsigned i = &pass - passes.data();
 
       if (!set_unique_map(common.texture_semantic_map, name,
                slang_texture_semantic_map{ SLANG_TEXTURE_SEMANTIC_PASS_OUTPUT, i }))
@@ -761,9 +907,20 @@ bool vulkan_filter_chain::init_alias()
       if (!set_unique_map(common.texture_semantic_uniform_map, name + "FeedbackSize",
                slang_texture_semantic_map{ SLANG_TEXTURE_SEMANTIC_PASS_FEEDBACK, i }))
          return false;
-
-      i++;
    }
+
+   for (auto &lut : common.luts)
+   {
+      unsigned i = &lut - common.luts.data();
+      if (!set_unique_map(common.texture_semantic_map, lut->get_id(),
+               slang_texture_semantic_map{ SLANG_TEXTURE_SEMANTIC_USER, i }))
+         return false;
+
+      if (!set_unique_map(common.texture_semantic_uniform_map, lut->get_id() + "Size",
+               slang_texture_semantic_map{ SLANG_TEXTURE_SEMANTIC_USER, i }))
+         return false;
+   }
+
    return true;
 }
 
@@ -794,6 +951,7 @@ bool vulkan_filter_chain::init_ubo()
                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT));
    }
 
+   common.ubo_mapped = static_cast<uint8_t*>(common.ubo->map());
    return true;
 }
 
@@ -825,7 +983,7 @@ bool vulkan_filter_chain::init()
       return false;
    if (!init_feedback())
       return false;
-
+   common.pass_outputs.resize(passes.size());
    return true;
 }
 
@@ -854,14 +1012,16 @@ void vulkan_filter_chain::build_offscreen_passes(VkCommandBuffer cmd,
    update_history_info();
    update_feedback_info();
 
-   common.ubo_mapped = static_cast<uint8_t*>(common.ubo->map());
-
    unsigned i;
    DeferredDisposer disposer(deferred_calls[current_sync_index]);
    const Texture original = { 
-      input_texture, passes.front()->get_source_filter() };
-   Texture source         = { 
-      input_texture, passes.front()->get_source_filter() };
+      input_texture,
+      passes.front()->get_source_filter(),
+      passes.front()->get_mip_filter(),
+      passes.front()->get_address_mode(),
+   };
+
+   Texture source = original;
 
    for (i = 0; i < passes.size() - 1; i++)
    {
@@ -874,6 +1034,10 @@ void vulkan_filter_chain::build_offscreen_passes(VkCommandBuffer cmd,
       source.texture.width    = fb.get_size().width;
       source.texture.height   = fb.get_size().height;
       source.filter           = passes[i + 1]->get_source_filter();
+      source.mip_filter       = passes[i + 1]->get_mip_filter();
+      source.address          = passes[i + 1]->get_address_mode();
+
+      common.pass_outputs[i] = source;
    }
 }
 
@@ -926,6 +1090,18 @@ void vulkan_filter_chain::update_history(DeferredDisposer &disposer, VkCommandBu
    swap(original_history.front(), tmp);
 }
 
+void vulkan_filter_chain::end_frame(VkCommandBuffer cmd)
+{
+   // If we need to keep old frames, copy it after fragment is complete.
+   // TODO: We can improve pipelining by figuring out which pass is the last that reads from
+   // the history and dispatch the copy earlier.
+   if (!original_history.empty())
+   {
+      DeferredDisposer disposer(deferred_calls[current_sync_index]);
+      update_history(disposer, cmd);
+   }
+}
+
 void vulkan_filter_chain::build_viewport_pass(
       VkCommandBuffer cmd, const VkViewport &vp, const float *mvp)
 {
@@ -939,10 +1115,21 @@ void vulkan_filter_chain::build_viewport_pass(
    Texture source;
    DeferredDisposer disposer(deferred_calls[current_sync_index]);
    const Texture original = { 
-      input_texture, passes.front()->get_source_filter() };
+      input_texture,
+      passes.front()->get_source_filter(),
+      passes.front()->get_mip_filter(),
+      passes.front()->get_address_mode(),
+   };
 
    if (passes.size() == 1)
-      source = { input_texture, passes.back()->get_source_filter() };
+   {
+      source = {
+         input_texture,
+         passes.back()->get_source_filter(),
+         passes.back()->get_mip_filter(),
+         passes.back()->get_address_mode(),
+      };
+   }
    else
    {
       auto &fb = passes[passes.size() - 2]->get_framebuffer();
@@ -951,23 +1138,54 @@ void vulkan_filter_chain::build_viewport_pass(
       source.texture.width   = fb.get_size().width;
       source.texture.height  = fb.get_size().height;
       source.filter          = passes.back()->get_source_filter();
+      source.mip_filter      = passes.back()->get_mip_filter();
+      source.address         = passes.back()->get_address_mode();
    }
 
    passes.back()->build_commands(disposer, cmd,
          original, source, vp, mvp);
 
-   common.ubo->unmap();
-   common.ubo_mapped = nullptr;
-
-   // If we need to keep old frames, copy it after fragment is complete.
-   // TODO: We can improve pipelining by figuring out which pass is the last that reads from
-   // the history and dispatch the copy earlier.
-   if (!original_history.empty())
-      update_history(disposer, cmd);
-
    // For feedback FBOs, swap current and previous.
    for (auto &pass : passes)
       pass->end_frame();
+}
+
+StaticTexture::StaticTexture(string id,
+      VkDevice device,
+      VkImage image,
+      VkImageView view,
+      VkDeviceMemory memory,
+      unique_ptr<Buffer> buffer,
+      unsigned width, unsigned height,
+      bool linear,
+      bool mipmap,
+      vulkan_filter_chain_address address)
+   : id(move(id)),
+     device(device),
+     image(image),
+     view(view),
+     memory(memory),
+     buffer(move(buffer))
+{
+   texture.filter = linear ? VULKAN_FILTER_CHAIN_LINEAR : VULKAN_FILTER_CHAIN_NEAREST;
+   texture.mip_filter =
+      mipmap && linear ? VULKAN_FILTER_CHAIN_LINEAR : VULKAN_FILTER_CHAIN_NEAREST;
+   texture.address = address;
+   texture.texture.image = image;
+   texture.texture.view = view;
+   texture.texture.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+   texture.texture.width = width;
+   texture.texture.height = height;
+}
+
+StaticTexture::~StaticTexture()
+{
+   if (view != VK_NULL_HANDLE)
+      vkDestroyImageView(device, view, nullptr);
+   if (image != VK_NULL_HANDLE)
+      vkDestroyImage(device, image, nullptr);
+   if (memory != VK_NULL_HANDLE)
+      vkFreeMemory(device, memory, nullptr);
 }
 
 Buffer::Buffer(VkDevice device,
@@ -998,19 +1216,26 @@ Buffer::Buffer(VkDevice device,
 
 void *Buffer::map()
 {
-   void *ptr = nullptr;
-   if (vkMapMemory(device, memory, 0, size, 0, &ptr) == VK_SUCCESS)
-      return ptr;
-   return nullptr;
+   if (!mapped)
+   {
+      if (vkMapMemory(device, memory, 0, size, 0, &mapped) == VK_SUCCESS)
+         return mapped;
+      return nullptr;
+   }
+   return mapped;
 }
 
 void Buffer::unmap()
 {
-   vkUnmapMemory(device, memory);
+   if (mapped)
+      vkUnmapMemory(device, memory);
+   mapped = nullptr;
 }
 
 Buffer::~Buffer()
 {
+   if (mapped)
+      unmap();
    if (memory != VK_NULL_HANDLE)
       vkFreeMemory(device, memory, nullptr);
    if (buffer != VK_NULL_HANDLE)
@@ -1020,6 +1245,11 @@ Buffer::~Buffer()
 Pass::~Pass()
 {
    clear_vk();
+}
+
+void Pass::add_parameter(unsigned index, const std::string &id)
+{
+   parameters.push_back({ id, index, unsigned(parameters.size()) });
 }
 
 void Pass::set_shader(VkShaderStageFlags stage,
@@ -1180,6 +1410,25 @@ bool Pass::init_pipeline_layout()
       VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
    layout_info.setLayoutCount             = 1;
    layout_info.pSetLayouts                = &set_layout;
+
+   // Push constants
+   VkPushConstantRange push_range = {};
+   if (reflection.push_constant_stage_mask && reflection.push_constant_size)
+   {
+      if (reflection.push_constant_stage_mask & SLANG_STAGE_VERTEX_MASK)
+         push_range.stageFlags |= VK_SHADER_STAGE_VERTEX_BIT;
+      if (reflection.push_constant_stage_mask & SLANG_STAGE_FRAGMENT_MASK)
+         push_range.stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT;
+
+      RARCH_LOG("[Vulkan]: Push Constant Block: %u bytes.\n", reflection.push_constant_size);
+
+      layout_info.pushConstantRangeCount = 1;
+      layout_info.pPushConstantRanges = &push_range;
+      push.buffer.resize((reflection.push_constant_size + sizeof(uint32_t) - 1) / sizeof(uint32_t));
+   }
+
+   push.stages = push_range.stageFlags;
+   push_range.size = reflection.push_constant_size;
 
    if (vkCreatePipelineLayout(device,
             &layout_info, NULL, &pipeline_layout) != VK_SUCCESS)
@@ -1366,36 +1615,95 @@ CommonResources::CommonResources(VkDevice device,
    memcpy(ptr, vbo_data, sizeof(vbo_data));
    vbo->unmap();
 
-   VkSamplerCreateInfo info = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
-   info.magFilter               = VK_FILTER_NEAREST;
-   info.minFilter               = VK_FILTER_NEAREST;
-   info.mipmapMode              = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-   info.addressModeU            = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-   info.addressModeV            = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-   info.addressModeW            = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+   VkSamplerCreateInfo info     = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
    info.mipLodBias              = 0.0f;
    info.maxAnisotropy           = 1.0f;
    info.compareEnable           = false;
    info.minLod                  = 0.0f;
-   info.maxLod                  = 0.0f;
+   info.maxLod                  = VK_LOD_CLAMP_NONE;
    info.unnormalizedCoordinates = false;
-   info.borderColor             = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+   info.borderColor             = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
 
-   vkCreateSampler(device,
-            &info, nullptr, &samplers[VULKAN_FILTER_CHAIN_NEAREST]);
+   for (unsigned i = 0; i < VULKAN_FILTER_CHAIN_COUNT; i++)
+   {
+      switch (static_cast<vulkan_filter_chain_filter>(i))
+      {
+         case VULKAN_FILTER_CHAIN_LINEAR:
+            info.magFilter = VK_FILTER_LINEAR;
+            info.minFilter = VK_FILTER_LINEAR;
+            break;
 
-   info.magFilter = VK_FILTER_LINEAR;
-   info.minFilter = VK_FILTER_LINEAR;
+         case VULKAN_FILTER_CHAIN_NEAREST:
+            info.magFilter = VK_FILTER_NEAREST;
+            info.minFilter = VK_FILTER_NEAREST;
+            break;
 
-   vkCreateSampler(device,
-            &info, nullptr, &samplers[VULKAN_FILTER_CHAIN_LINEAR]);
+         default:
+            break;
+      }
+
+      for (unsigned j = 0; j < VULKAN_FILTER_CHAIN_COUNT; j++)
+      {
+         switch (static_cast<vulkan_filter_chain_filter>(j))
+         {
+            case VULKAN_FILTER_CHAIN_LINEAR:
+               info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+               break;
+
+            case VULKAN_FILTER_CHAIN_NEAREST:
+               info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+               break;
+
+            default:
+               break;
+         }
+
+         for (unsigned k = 0; k < VULKAN_FILTER_CHAIN_ADDRESS_COUNT; k++)
+         {
+            VkSamplerAddressMode mode = VK_SAMPLER_ADDRESS_MODE_MAX_ENUM;
+
+            switch (static_cast<vulkan_filter_chain_address>(k))
+            {
+               case VULKAN_FILTER_CHAIN_ADDRESS_REPEAT:
+                  mode = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+                  break;
+
+               case VULKAN_FILTER_CHAIN_ADDRESS_MIRRORED_REPEAT:
+                  mode = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+                  break;
+
+               case VULKAN_FILTER_CHAIN_ADDRESS_CLAMP_TO_EDGE:
+                  mode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+                  break;
+
+               case VULKAN_FILTER_CHAIN_ADDRESS_CLAMP_TO_BORDER:
+                  mode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+                  break;
+
+               case VULKAN_FILTER_CHAIN_ADDRESS_MIRROR_CLAMP_TO_EDGE:
+                  mode = VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE;
+                  break;
+
+               default:
+                  break;
+            }
+
+            info.addressModeU = mode;
+            info.addressModeV = mode;
+            info.addressModeW = mode;
+            vkCreateSampler(device, &info, nullptr, &samplers[i][j][k]);
+         }
+      }
+   }
 }
 
 CommonResources::~CommonResources()
 {
-   for (auto &samp : samplers)
-      if (samp != VK_NULL_HANDLE)
-         vkDestroySampler(device, samp, nullptr);
+   for (auto &i : samplers)
+      for (auto &j : i)
+         for (auto &k : j)
+            if (k != VK_NULL_HANDLE)
+               vkDestroySampler(device, k, nullptr);
 }
 
 void Pass::allocate_buffers()
@@ -1426,12 +1734,16 @@ bool Pass::init_feedback()
    framebuffer_feedback = unique_ptr<Framebuffer>(
          new Framebuffer(device, memory_properties,
             current_framebuffer_size,
-            pass_info.rt_format));
+            pass_info.rt_format, pass_info.max_levels));
    return true;
 }
 
 bool Pass::build()
 {
+   unordered_map<string, slang_semantic_map> semantic_map;
+   unsigned i;
+   unsigned j = 0;
+
    framebuffer.reset();
    framebuffer_feedback.reset();
 
@@ -1440,17 +1752,35 @@ bool Pass::build()
       framebuffer = unique_ptr<Framebuffer>(
             new Framebuffer(device, memory_properties,
                current_framebuffer_size,
-               pass_info.rt_format));
+               pass_info.rt_format, pass_info.max_levels));
    }
 
-   reflection = slang_reflection{};
-   reflection.pass_number = pass_number;
-   reflection.texture_semantic_map = &common->texture_semantic_map;
+   for (auto &param : parameters)
+   {
+      if (!set_unique_map(semantic_map, param.id,
+               slang_semantic_map{ SLANG_SEMANTIC_FLOAT_PARAMETER, j }))
+         return false;
+      j++;
+   }
+
+   reflection                              = slang_reflection{};
+   reflection.pass_number                  = pass_number;
+   reflection.texture_semantic_map         = &common->texture_semantic_map;
    reflection.texture_semantic_uniform_map = &common->texture_semantic_uniform_map;
-   reflection.semantic_map = &common->semantic_map;
+   reflection.semantic_map                 = &semantic_map;
 
    if (!slang_reflect_spirv(vertex_shader, fragment_shader, &reflection))
       return false;
+
+   // Filter out parameters which we will never use anyways.
+   filtered_parameters.clear();
+
+   for (i = 0; i < reflection.semantic_float_parameters.size(); i++)
+   {
+      if (reflection.semantic_float_parameters[i].uniform ||
+          reflection.semantic_float_parameters[i].push_constant)
+         filtered_parameters.push_back(parameters[i]);
+   }
 
    if (!init_pipeline())
       return false;
@@ -1482,7 +1812,7 @@ void Pass::set_texture(VkDescriptorSet set, unsigned binding,
       const Texture &texture)
 {
    VkDescriptorImageInfo image_info;
-   image_info.sampler         = common->samplers[texture.filter];
+   image_info.sampler         = common->samplers[texture.filter][texture.mip_filter][texture.address];
    image_info.imageView       = texture.texture.view;
    image_info.imageLayout     = texture.texture.layout;
 
@@ -1509,53 +1839,75 @@ void Pass::set_semantic_texture_array(VkDescriptorSet set,
 {
    if (index < reflection.semantic_textures[semantic].size() &&
          reflection.semantic_textures[semantic][index].texture)
-   {
       set_texture(set, reflection.semantic_textures[semantic][index].binding, texture);
-   }
-}
-
-void Pass::build_semantic_texture_vec4(uint8_t *data, slang_texture_semantic semantic,
-      unsigned width, unsigned height)
-{
-   if (data && reflection.semantic_textures[semantic][0].uniform)
-   {
-      build_vec4(
-            reinterpret_cast<float *>(data + reflection.semantic_textures[semantic][0].ubo_offset),
-            width,
-            height);
-   }
 }
 
 void Pass::build_semantic_texture_array_vec4(uint8_t *data, slang_texture_semantic semantic,
       unsigned index, unsigned width, unsigned height)
 {
-   if (data && index < reflection.semantic_textures[semantic].size() &&
-         reflection.semantic_textures[semantic][index].uniform)
-   {
+   auto &refl = reflection.semantic_textures[semantic];
+   if (index >= refl.size())
+      return;
+
+   if (data && refl[index].uniform)
       build_vec4(
-            reinterpret_cast<float *>(data + reflection.semantic_textures[semantic][index].ubo_offset),
+            reinterpret_cast<float *>(data + refl[index].ubo_offset),
             width,
             height);
-   }
+
+   if (refl[index].push_constant)
+      build_vec4(
+            reinterpret_cast<float *>(push.buffer.data() + (refl[index].push_constant_offset >> 2)),
+            width,
+            height);
+}
+
+void Pass::build_semantic_texture_vec4(uint8_t *data, slang_texture_semantic semantic,
+      unsigned width, unsigned height)
+{
+   build_semantic_texture_array_vec4(data, semantic, 0, width, height);
 }
 
 void Pass::build_semantic_vec4(uint8_t *data, slang_semantic semantic,
       unsigned width, unsigned height)
 {
-   if (data && reflection.semantics[semantic].uniform)
-   {
+   auto &refl = reflection.semantics[semantic];
+
+   if (data && refl.uniform)
       build_vec4(
-            reinterpret_cast<float *>(data + reflection.semantics[semantic].ubo_offset),
+            reinterpret_cast<float *>(data + refl.ubo_offset),
             width,
             height);
-   }
+
+   if (refl.push_constant)
+      build_vec4(
+            reinterpret_cast<float *>(push.buffer.data() + (refl.push_constant_offset >> 2)),
+            width,
+            height);
+}
+
+void Pass::build_semantic_parameter(uint8_t *data, unsigned index, float value)
+{
+   auto &refl = reflection.semantic_float_parameters[index];
+
+   // We will have filtered out stale parameters.
+   if (data && refl.uniform)
+      *reinterpret_cast<float*>(data + refl.ubo_offset) = value;
+
+   if (refl.push_constant)
+      *reinterpret_cast<float*>(push.buffer.data() + (refl.push_constant_offset >> 2)) = value;
 }
 
 void Pass::build_semantic_uint(uint8_t *data, slang_semantic semantic,
       uint32_t value)
 {
-   if (data && reflection.semantics[semantic].uniform)
+   auto &refl = reflection.semantics[semantic];
+
+   if (data && refl.uniform)
       *reinterpret_cast<uint32_t*>(data + reflection.semantics[semantic].ubo_offset) = value;
+
+   if (refl.push_constant)
+      *reinterpret_cast<uint32_t*>(push.buffer.data() + (refl.push_constant_offset >> 2)) = value;
 }
 
 void Pass::build_semantic_texture(VkDescriptorSet set, uint8_t *buffer,
@@ -1587,11 +1939,21 @@ void Pass::build_semantics(VkDescriptorSet set, uint8_t *buffer,
          build_identity_matrix(reinterpret_cast<float *>(buffer + offset));
    }
 
+   if (reflection.semantics[SLANG_SEMANTIC_MVP].push_constant)
+   {
+      size_t offset = reflection.semantics[SLANG_SEMANTIC_MVP].push_constant_offset;
+      if (mvp)
+         memcpy(push.buffer.data() + (offset >> 2), mvp, sizeof(float) * 16);
+      else
+         build_identity_matrix(reinterpret_cast<float *>(push.buffer.data() + (offset >> 2)));
+   }
+
    // Output information
    build_semantic_vec4(buffer, SLANG_SEMANTIC_OUTPUT,
          current_framebuffer_size.width, current_framebuffer_size.height);
    build_semantic_vec4(buffer, SLANG_SEMANTIC_FINAL_VIEWPORT,
          unsigned(current_viewport.width), unsigned(current_viewport.height));
+
    build_semantic_uint(buffer, SLANG_SEMANTIC_FRAME_COUNT,
          frame_count_period ? uint32_t(frame_count % frame_count_period) : uint32_t(frame_count));
 
@@ -1601,6 +1963,13 @@ void Pass::build_semantics(VkDescriptorSet set, uint8_t *buffer,
 
    // ORIGINAL_HISTORY[0] is an alias of ORIGINAL.
    build_semantic_texture_array(set, buffer, SLANG_TEXTURE_SEMANTIC_ORIGINAL_HISTORY, 0, original);
+
+   // Parameters.
+   for (auto &param : filtered_parameters)
+   {
+      float value = common->shader_preset->parameters[param.index].current;
+      build_semantic_parameter(buffer, param.semantic_index, value);
+   }
 
    // Previous inputs.
    unsigned i = 0;
@@ -1612,6 +1981,16 @@ void Pass::build_semantics(VkDescriptorSet set, uint8_t *buffer,
       i++;
    }
 
+   // Previous passes.
+   i = 0;
+   for (auto &texture : common->pass_outputs)
+   {
+      build_semantic_texture_array(set, buffer,
+            SLANG_TEXTURE_SEMANTIC_PASS_OUTPUT, i,
+            texture);
+      i++;
+   }
+
    // Feedback FBOs.
    i = 0;
    for (auto &texture : common->framebuffer_feedback)
@@ -1619,6 +1998,16 @@ void Pass::build_semantics(VkDescriptorSet set, uint8_t *buffer,
       build_semantic_texture_array(set, buffer,
             SLANG_TEXTURE_SEMANTIC_PASS_FEEDBACK, i,
             texture);
+      i++;
+   }
+
+   // LUTs.
+   i = 0;
+   for (auto &lut : common->luts)
+   {
+      build_semantic_texture_array(set, buffer,
+            SLANG_TEXTURE_SEMANTIC_USER, i,
+            lut->get_texture());
       i++;
    }
 }
@@ -1657,7 +2046,8 @@ void Pass::build_commands(
    {
       set_uniform_buffer(sets[sync_index], reflection.ubo_binding,
             common->ubo->get_buffer(),
-            ubo_offset, reflection.ubo_size);
+            ubo_offset + sync_index * common->ubo_sync_index_stride,
+            reflection.ubo_size);
    }
 
    // The final pass is always executed inside 
@@ -1667,8 +2057,8 @@ void Pass::build_commands(
    if (!final_pass)
    {
       // Render.
-      image_layout_transition(cmd,
-            framebuffer->get_image(),
+      image_layout_transition_levels(cmd,
+            framebuffer->get_image(), 1,
             VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             0,
@@ -1678,17 +2068,12 @@ void Pass::build_commands(
 
       VkRenderPassBeginInfo rp_info = { 
          VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-      VkClearValue clear_value;
-      clear_value.color.float32[0]     = 0.0f;
-      clear_value.color.float32[1]     = 0.0f;
-      clear_value.color.float32[2]     = 0.0f;
-      clear_value.color.float32[3]     = 1.0f;
       rp_info.renderPass               = framebuffer->get_render_pass();
       rp_info.framebuffer              = framebuffer->get_framebuffer();
       rp_info.renderArea.extent.width  = current_framebuffer_size.width;
       rp_info.renderArea.extent.height = current_framebuffer_size.height;
-      rp_info.clearValueCount          = 1;
-      rp_info.pClearValues             = &clear_value;
+      rp_info.clearValueCount          = 0;
+      rp_info.pClearValues             = nullptr;
 
       vkCmdBeginRenderPass(cmd, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
    }
@@ -1696,6 +2081,13 @@ void Pass::build_commands(
    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout,
          0, 1, &sets[sync_index], 0, nullptr);
+
+   if (push.stages != 0)
+   {
+      vkCmdPushConstants(cmd, pipeline_layout,
+            push.stages, 0, reflection.push_constant_size,
+            push.buffer.data());
+   }
 
    VkDeviceSize offset = final_pass ? 16 * sizeof(float) : 0;
    vkCmdBindVertexBuffers(cmd, 0, 1,
@@ -1743,47 +2135,55 @@ void Pass::build_commands(
    {
       vkCmdEndRenderPass(cmd);
 
-      // Barrier to sync with next pass.
-      image_layout_transition(
-            cmd,
-            framebuffer->get_image(),
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-            VK_ACCESS_SHADER_READ_BIT,
-            VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+      if (framebuffer->get_levels() > 1)
+         framebuffer->generate_mips(cmd);
+      else
+      {
+         // Barrier to sync with next pass.
+         image_layout_transition(
+               cmd,
+               framebuffer->get_image(),
+               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+               VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+               VK_ACCESS_SHADER_READ_BIT,
+               VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,
+               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+      }
    }
 }
 
 Framebuffer::Framebuffer(
       VkDevice device,
       const VkPhysicalDeviceMemoryProperties &mem_props,
-      const Size2D &max_size, VkFormat format) :
+      const Size2D &max_size, VkFormat format,
+      unsigned max_levels) :
    device(device),
    memory_properties(mem_props),
    size(max_size),
-   format(format)
+   format(format),
+   max_levels(max(max_levels, 1u))
 {
-   RARCH_LOG("[Vulkan filter chain]: Creating framebuffer %u x %u.\n",
-         max_size.width, max_size.height);
+   RARCH_LOG("[Vulkan filter chain]: Creating framebuffer %u x %u (max %u level(s)).\n",
+         max_size.width, max_size.height, max_levels);
    init_render_pass();
    init(nullptr);
 }
 
 void Framebuffer::clear(VkCommandBuffer cmd)
 {
+   VkClearColorValue color;
+   VkImageSubresourceRange range;
+
    image_layout_transition(cmd, image,
          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          0, VK_ACCESS_TRANSFER_WRITE_BIT,
          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
          VK_PIPELINE_STAGE_TRANSFER_BIT);
 
-   VkClearColorValue color;
    memset(&color, 0, sizeof(color));
-
-   VkImageSubresourceRange range;
    memset(&range, 0, sizeof(range));
+
    range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
    range.levelCount = 1;
    range.layerCount = 1;
@@ -1798,23 +2198,152 @@ void Framebuffer::clear(VkCommandBuffer cmd)
          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 }
 
+void Framebuffer::generate_mips(VkCommandBuffer cmd)
+{
+   unsigned i;
+   // This is run every frame, so make sure
+   // we aren't opting into the "lazy" way of doing this. :)
+   VkImageMemoryBarrier barriers[2] = {
+      { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER },
+      { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER },
+   };
+
+   // First, transfer the input mip level to TRANSFER_SRC_OPTIMAL.
+   // This should allow the surface to stay compressed.
+   // All subsequent mip-layers are now transferred into DST_OPTIMAL from
+   // UNDEFINED at this point.
+
+   // Input
+   barriers[0].srcAccessMask                 = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+   barriers[0].dstAccessMask                 = VK_ACCESS_TRANSFER_READ_BIT;
+   barriers[0].oldLayout                     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+   barriers[0].newLayout                     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+   barriers[0].srcQueueFamilyIndex           = VK_QUEUE_FAMILY_IGNORED;
+   barriers[0].dstQueueFamilyIndex           = VK_QUEUE_FAMILY_IGNORED;
+   barriers[0].image                         = image;
+   barriers[0].subresourceRange.aspectMask   = VK_IMAGE_ASPECT_COLOR_BIT;
+   barriers[0].subresourceRange.baseMipLevel = 0;
+   barriers[0].subresourceRange.levelCount   = 1;
+   barriers[0].subresourceRange.layerCount   = VK_REMAINING_ARRAY_LAYERS;
+
+   // The rest of the mip chain
+   barriers[1].srcAccessMask                 = 0;
+   barriers[1].dstAccessMask                 = VK_ACCESS_TRANSFER_WRITE_BIT;
+   barriers[1].oldLayout                     = VK_IMAGE_LAYOUT_UNDEFINED;
+   barriers[1].newLayout                     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+   barriers[1].srcQueueFamilyIndex           = VK_QUEUE_FAMILY_IGNORED;
+   barriers[1].dstQueueFamilyIndex           = VK_QUEUE_FAMILY_IGNORED;
+   barriers[1].image                         = image;
+   barriers[1].subresourceRange.aspectMask   = VK_IMAGE_ASPECT_COLOR_BIT;
+   barriers[1].subresourceRange.baseMipLevel = 1;
+   barriers[1].subresourceRange.levelCount   = VK_REMAINING_MIP_LEVELS;
+   barriers[1].subresourceRange.layerCount   = VK_REMAINING_ARRAY_LAYERS;
+
+   vkCmdPipelineBarrier(cmd,
+         VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,
+         VK_PIPELINE_STAGE_TRANSFER_BIT,
+         false,
+         0, nullptr,
+         0, nullptr,
+         2, barriers);
+
+   for (i = 1; i < levels; i++)
+   {
+      // For subsequent passes, we have to transition from DST_OPTIMAL to SRC_OPTIMAL,
+      // but only do so one mip-level at a time.
+      if (i > 1)
+      {
+         barriers[0].srcAccessMask                 = VK_ACCESS_TRANSFER_WRITE_BIT;
+         barriers[0].dstAccessMask                 = VK_ACCESS_TRANSFER_READ_BIT;
+         barriers[0].subresourceRange.baseMipLevel = i - 1;
+         barriers[0].subresourceRange.levelCount   = 1;
+         barriers[0].oldLayout                     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+         barriers[0].newLayout                     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+
+         vkCmdPipelineBarrier(cmd,
+               VK_PIPELINE_STAGE_TRANSFER_BIT,
+               VK_PIPELINE_STAGE_TRANSFER_BIT,
+               false,
+               0, nullptr,
+               0, nullptr,
+               1, barriers);
+      }
+
+      VkImageBlit blit_region = {};
+      unsigned src_width      = MAX(size.width >> (i - 1), 1u);
+      unsigned src_height     = MAX(size.height >> (i - 1), 1u);
+      unsigned target_width   = MAX(size.width >> i, 1u);
+      unsigned target_height  = MAX(size.height >> i, 1u);
+
+      blit_region.srcSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+      blit_region.srcSubresource.mipLevel       = i - 1;
+      blit_region.srcSubresource.baseArrayLayer = 0;
+      blit_region.srcSubresource.layerCount     = 1;
+      blit_region.dstSubresource                = blit_region.srcSubresource;
+      blit_region.dstSubresource.mipLevel       = i;
+      blit_region.srcOffsets[1].x               = src_width;
+      blit_region.srcOffsets[1].y               = src_height;
+      blit_region.srcOffsets[1].z               = 1;
+      blit_region.dstOffsets[1].x               = target_width;
+      blit_region.dstOffsets[1].y               = target_height;
+      blit_region.dstOffsets[1].z               = 1;
+
+      vkCmdBlitImage(cmd,
+            image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1, &blit_region, VK_FILTER_LINEAR);
+   }
+
+   // We are now done, and we have all mip-levels except the last in TRANSFER_SRC_OPTIMAL,
+   // and the last one still on TRANSFER_DST_OPTIMAL, so do a final barrier which
+   // moves everything to SHADER_READ_ONLY_OPTIMAL in one go along with the execution barrier to next pass.
+   // Read-to-read memory barrier, so only need execution barrier for first transition.
+   barriers[0].srcAccessMask                 = VK_ACCESS_TRANSFER_READ_BIT;
+   barriers[0].dstAccessMask                 = VK_ACCESS_SHADER_READ_BIT;
+   barriers[0].subresourceRange.baseMipLevel = 0;
+   barriers[0].subresourceRange.levelCount   = levels - 1;
+   barriers[0].oldLayout                     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+   barriers[0].newLayout                     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+   // This is read-after-write barrier.
+   barriers[1].srcAccessMask                 = VK_ACCESS_TRANSFER_WRITE_BIT;
+   barriers[1].dstAccessMask                 = VK_ACCESS_SHADER_READ_BIT;
+   barriers[1].subresourceRange.baseMipLevel = levels - 1;
+   barriers[1].subresourceRange.levelCount   = 1;
+   barriers[1].oldLayout                     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+   barriers[1].newLayout                     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+   vkCmdPipelineBarrier(cmd,
+         VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+         false,
+         0, nullptr,
+         0, nullptr,
+         2, barriers);
+
+   // Next pass will wait for ALL_GRAPHICS_BIT, and since we have dstStage as FRAGMENT_SHADER,
+   // the dependency chain will ensure we don't start next pass until the mipchain is complete.
+}
+
 void Framebuffer::copy(VkCommandBuffer cmd,
       VkImage src_image, VkImageLayout src_layout)
 {
+   VkImageCopy region;
+
    image_layout_transition(cmd, image,
          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          0, VK_ACCESS_TRANSFER_WRITE_BIT,
          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
          VK_PIPELINE_STAGE_TRANSFER_BIT);
 
-   VkImageCopy region;
    memset(&region, 0, sizeof(region));
+
    region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
    region.srcSubresource.layerCount = 1;
-   region.dstSubresource = region.srcSubresource;
-   region.extent.width = size.width;
-   region.extent.height = size.height;
-   region.extent.depth = 1;
+   region.dstSubresource            = region.srcSubresource;
+   region.extent.width              = size.width;
+   region.extent.height             = size.height;
+   region.extent.depth              = 1;
 
    vkCmdCopyImage(cmd,
          src_image, src_layout,
@@ -1837,15 +2366,18 @@ void Framebuffer::init(DeferredDisposer *disposer)
    info.extent.width      = size.width;
    info.extent.height     = size.height;
    info.extent.depth      = 1;
-   info.mipLevels         = 1;
+   info.mipLevels         = min(max_levels, num_miplevels(size.width, size.height));
    info.arrayLayers       = 1;
    info.samples           = VK_SAMPLE_COUNT_1_BIT;
    info.tiling            = VK_IMAGE_TILING_OPTIMAL;
    info.usage             = VK_IMAGE_USAGE_SAMPLED_BIT | 
       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-      VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+      VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+      VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+
    info.sharingMode       = VK_SHARING_MODE_EXCLUSIVE;
    info.initialLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
+   levels = info.mipLevels;
 
    vkCreateImage(device, &info, nullptr, &image);
 
@@ -1884,7 +2416,7 @@ void Framebuffer::init(DeferredDisposer *disposer)
    view_info.image                           = image;
    view_info.subresourceRange.baseMipLevel   = 0;
    view_info.subresourceRange.baseArrayLayer = 0;
-   view_info.subresourceRange.levelCount     = 1;
+   view_info.subresourceRange.levelCount     = levels;
    view_info.subresourceRange.layerCount     = 1;
    view_info.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
    view_info.components.r                    = VK_COMPONENT_SWIZZLE_R;
@@ -1893,6 +2425,8 @@ void Framebuffer::init(DeferredDisposer *disposer)
    view_info.components.a                    = VK_COMPONENT_SWIZZLE_A;
 
    vkCreateImageView(device, &view_info, nullptr, &view);
+   view_info.subresourceRange.levelCount = 1;
+   vkCreateImageView(device, &view_info, nullptr, &fb_view);
 
    init_framebuffer();
 }
@@ -1936,7 +2470,7 @@ void Framebuffer::init_framebuffer()
       VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
    info.renderPass      = render_pass;
    info.attachmentCount = 1;
-   info.pAttachments    = &view;
+   info.pAttachments    = &fb_view;
    info.width           = size.width;
    info.height          = size.height;
    info.layers          = 1;
@@ -1959,16 +2493,19 @@ void Framebuffer::set_size(DeferredDisposer &disposer, const Size2D &size)
       //
       // Fake lambda init captures for C++11.
       //
-      auto d  = device;
-      auto i  = image;
-      auto v  = view;
-      auto fb = framebuffer;
+      auto d   = device;
+      auto i   = image;
+      auto v   = view;
+      auto fbv = fb_view;
+      auto fb  = framebuffer;
       disposer.defer([=]
       {
          if (fb != VK_NULL_HANDLE)
             vkDestroyFramebuffer(d, fb, nullptr);
          if (v != VK_NULL_HANDLE)
             vkDestroyImageView(d, v, nullptr);
+         if (fbv != VK_NULL_HANDLE)
+            vkDestroyImageView(d, fbv, nullptr);
          if (i != VK_NULL_HANDLE)
             vkDestroyImage(d, i, nullptr);
       });
@@ -1985,6 +2522,8 @@ Framebuffer::~Framebuffer()
       vkDestroyRenderPass(device, render_pass, nullptr);
    if (view != VK_NULL_HANDLE)
       vkDestroyImageView(device, view, nullptr);
+   if (fb_view != VK_NULL_HANDLE)
+      vkDestroyImageView(device, fb_view, nullptr);
    if (image != VK_NULL_HANDLE)
       vkDestroyImage(device, image, nullptr);
    if (memory.memory != VK_NULL_HANDLE)
@@ -2010,13 +2549,16 @@ vulkan_filter_chain_t *vulkan_filter_chain_create_default(
    if (!chain)
       return nullptr;
 
-   memset(&pass_info, 0, sizeof(pass_info));
    pass_info.scale_type_x  = VULKAN_FILTER_CHAIN_SCALE_VIEWPORT;
    pass_info.scale_type_y  = VULKAN_FILTER_CHAIN_SCALE_VIEWPORT;
    pass_info.scale_x       = 1.0f;
    pass_info.scale_y       = 1.0f;
    pass_info.rt_format     = tmpinfo.swapchain.format;
    pass_info.source_filter = filter;
+   pass_info.mip_filter    = VULKAN_FILTER_CHAIN_NEAREST;
+   pass_info.address       = VULKAN_FILTER_CHAIN_ADDRESS_CLAMP_TO_EDGE;
+   pass_info.max_levels    = 0;
+
    chain->set_pass_info(0, pass_info);
 
    chain->set_shader(0, VK_SHADER_STAGE_VERTEX_BIT,
@@ -2086,23 +2628,245 @@ static VkFormat glslang_format_to_vk(glslang_format fmt)
    }
 }
 
+static vulkan_filter_chain_address wrap_to_address(gfx_wrap_type type)
+{
+   switch (type)
+   {
+      default:
+      case RARCH_WRAP_EDGE:
+         return VULKAN_FILTER_CHAIN_ADDRESS_CLAMP_TO_EDGE;
+
+      case RARCH_WRAP_BORDER:
+         return VULKAN_FILTER_CHAIN_ADDRESS_CLAMP_TO_BORDER;
+
+      case RARCH_WRAP_REPEAT:
+         return VULKAN_FILTER_CHAIN_ADDRESS_REPEAT;
+
+      case RARCH_WRAP_MIRRORED_REPEAT:
+         return VULKAN_FILTER_CHAIN_ADDRESS_MIRRORED_REPEAT;
+   }
+}
+
+static unique_ptr<StaticTexture> vulkan_filter_chain_load_lut(VkCommandBuffer cmd,
+      const struct vulkan_filter_chain_create_info *info,
+      vulkan_filter_chain *chain,
+      const video_shader_lut *shader)
+{
+   unsigned i;
+   texture_image image;
+   unique_ptr<Buffer> buffer;
+   VkMemoryRequirements mem_reqs;
+   VkImageCreateInfo image_info    = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+   VkImageViewCreateInfo view_info = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+   VkMemoryAllocateInfo alloc      = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+   VkImage tex                     = VK_NULL_HANDLE;
+   VkDeviceMemory memory           = VK_NULL_HANDLE;
+   VkImageView view                = VK_NULL_HANDLE;
+   VkBufferImageCopy region        = {};
+   void *ptr                       = nullptr;
+
+   image.width              = 0;
+   image.height             = 0;
+   image.pixels             = NULL;
+   image.supports_rgba      = video_driver_supports_rgba();
+
+   if (!image_texture_load(&image, shader->path))
+      return {};
+
+   image_info.imageType     = VK_IMAGE_TYPE_2D;
+   image_info.format        = VK_FORMAT_B8G8R8A8_UNORM;
+   image_info.extent.width  = image.width;
+   image_info.extent.height = image.height;
+   image_info.extent.depth  = 1;
+   image_info.mipLevels     = shader->mipmap ? num_miplevels(image.width, image.height) : 1;
+   image_info.arrayLayers   = 1;
+   image_info.samples       = VK_SAMPLE_COUNT_1_BIT;
+   image_info.tiling        = VK_IMAGE_TILING_OPTIMAL;
+   image_info.usage         = VK_IMAGE_USAGE_SAMPLED_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+   vkCreateImage(info->device, &image_info, nullptr, &tex);
+   vkGetImageMemoryRequirements(info->device, tex, &mem_reqs);
+   alloc.allocationSize = mem_reqs.size;
+   alloc.memoryTypeIndex = find_memory_type(
+         *info->memory_properties,
+         mem_reqs.memoryTypeBits,
+         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+   if (vkAllocateMemory(info->device, &alloc, nullptr, &memory) != VK_SUCCESS)
+      goto error;
+
+   vkBindImageMemory(info->device, tex, memory, 0);
+
+   view_info.image                       = tex;
+   view_info.viewType                    = VK_IMAGE_VIEW_TYPE_2D;
+   view_info.format                      = VK_FORMAT_B8G8R8A8_UNORM;
+   view_info.components.r                = VK_COMPONENT_SWIZZLE_R;
+   view_info.components.g                = VK_COMPONENT_SWIZZLE_G;
+   view_info.components.b                = VK_COMPONENT_SWIZZLE_B;
+   view_info.components.a                = VK_COMPONENT_SWIZZLE_A;
+   view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+   view_info.subresourceRange.levelCount = image_info.mipLevels;
+   view_info.subresourceRange.layerCount = 1;
+   vkCreateImageView(info->device, &view_info, nullptr, &view);
+
+   buffer = unique_ptr<Buffer>(new Buffer(info->device, *info->memory_properties,
+            image.width * image.height * sizeof(uint32_t), VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+   ptr = buffer->map();
+   memcpy(ptr, image.pixels, image.width * image.height * sizeof(uint32_t));
+   buffer->unmap();
+
+   image_layout_transition(cmd, tex,
+         VK_IMAGE_LAYOUT_UNDEFINED,
+         shader->mipmap ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+         0, VK_ACCESS_TRANSFER_WRITE_BIT,
+         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+
+   region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+   region.imageSubresource.mipLevel = 0;
+   region.imageSubresource.baseArrayLayer = 0;
+   region.imageSubresource.layerCount = 1;
+   region.imageExtent.width = image.width;
+   region.imageExtent.height = image.height;
+   region.imageExtent.depth = 1;
+
+   vkCmdCopyBufferToImage(cmd, buffer->get_buffer(), tex,
+         shader->mipmap ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+         1, &region);
+
+   for (i = 1; i < image_info.mipLevels; i++)
+   {
+      VkImageBlit blit_region = {};
+      unsigned src_width      = MAX(image.width >> (i - 1), 1u);
+      unsigned src_height     = MAX(image.height >> (i - 1), 1u);
+      unsigned target_width   = MAX(image.width >> i, 1u);
+      unsigned target_height  = MAX(image.height >> i, 1u);
+
+      blit_region.srcSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+      blit_region.srcSubresource.mipLevel       = i - 1;
+      blit_region.srcSubresource.baseArrayLayer = 0;
+      blit_region.srcSubresource.layerCount     = 1;
+      blit_region.dstSubresource                = blit_region.srcSubresource;
+      blit_region.dstSubresource.mipLevel       = i;
+      blit_region.srcOffsets[1].x               = src_width;
+      blit_region.srcOffsets[1].y               = src_height;
+      blit_region.srcOffsets[1].z               = 1;
+      blit_region.dstOffsets[1].x               = target_width;
+      blit_region.dstOffsets[1].y               = target_height;
+      blit_region.dstOffsets[1].z               = 1;
+
+      /* Only injects execution and memory barriers,
+       * not actual transition. */
+      image_layout_transition(cmd, tex,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_TRANSFER_READ_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT);
+
+      vkCmdBlitImage(cmd,
+            tex, VK_IMAGE_LAYOUT_GENERAL,
+            tex, VK_IMAGE_LAYOUT_GENERAL,
+            1, &blit_region, VK_FILTER_LINEAR);
+   }
+
+   image_layout_transition(cmd, tex,
+         shader->mipmap ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+         VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+   image_texture_free(&image);
+   image.pixels = nullptr;
+
+   return unique_ptr<StaticTexture>(new StaticTexture(shader->id, info->device,
+            tex, view, memory, move(buffer), image.width, image.height,
+            shader->filter != RARCH_FILTER_NEAREST,
+            image_info.mipLevels > 1,
+            wrap_to_address(shader->wrap)));
+
+error:
+   if (image.pixels)
+      image_texture_free(&image);
+   if (tex != VK_NULL_HANDLE)
+      vkDestroyImage(info->device, tex, nullptr);
+   if (view != VK_NULL_HANDLE)
+      vkDestroyImageView(info->device, view, nullptr);
+   if (memory != VK_NULL_HANDLE)
+      vkFreeMemory(info->device, memory, nullptr);
+   return {};
+}
+
+static bool vulkan_filter_chain_load_luts(
+      const struct vulkan_filter_chain_create_info *info,
+      vulkan_filter_chain *chain,
+      video_shader *shader)
+{
+   VkCommandBufferBeginInfo begin_info           = {
+      VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+   VkSubmitInfo submit_info                      = {
+      VK_STRUCTURE_TYPE_SUBMIT_INFO };
+   VkCommandBuffer cmd                           = VK_NULL_HANDLE;
+   VkCommandBufferAllocateInfo cmd_info          = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+   bool recording                                = false;
+
+   cmd_info.commandPool        = info->command_pool;
+   cmd_info.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+   cmd_info.commandBufferCount = 1;
+
+   vkAllocateCommandBuffers(info->device, &cmd_info, &cmd);
+   begin_info.flags            = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+   vkBeginCommandBuffer(cmd, &begin_info);
+   recording                   = true;
+
+   for (unsigned i = 0; i < shader->luts; i++)
+   {
+      auto image = vulkan_filter_chain_load_lut(cmd, info, chain, &shader->lut[i]);
+      if (!image)
+      {
+         RARCH_ERR("[Vulkan]: Failed to load LUT \"%s\".\n", shader->lut[i].path);
+         goto error;
+      }
+
+      chain->add_static_texture(move(image));
+   }
+
+   vkEndCommandBuffer(cmd);
+   submit_info.commandBufferCount = 1;
+   submit_info.pCommandBuffers    = &cmd;
+   vkQueueSubmit(info->queue, 1, &submit_info, VK_NULL_HANDLE);
+   vkQueueWaitIdle(info->queue);
+   vkFreeCommandBuffers(info->device, info->command_pool, 1, &cmd);
+   chain->release_staging_buffers();
+   return true;
+
+error:
+   if (recording)
+      vkEndCommandBuffer(cmd);
+   if (cmd != VK_NULL_HANDLE)
+      vkFreeCommandBuffers(info->device, info->command_pool, 1, &cmd);
+   return false;
+}
+
 vulkan_filter_chain_t *vulkan_filter_chain_create_from_preset(
       const struct vulkan_filter_chain_create_info *info,
       const char *path, vulkan_filter_chain_filter filter)
 {
+   unsigned i;
    unique_ptr<video_shader> shader{ new video_shader() };
    if (!shader)
       return nullptr;
 
    unique_ptr<config_file_t, ConfigDeleter> conf{ config_file_new(path) };
-   if (!path)
+   if (!conf)
       return nullptr;
 
    if (!video_shader_read_conf_cgp(conf.get(), shader.get()))
       return nullptr;
 
    video_shader_resolve_relative(shader.get(), path);
-   video_shader_resolve_parameters(conf.get(), shader.get());
 
    bool last_pass_is_fbo = shader->pass[shader->passes - 1].fbo.valid;
    auto tmpinfo          = *info;
@@ -2112,18 +2876,78 @@ vulkan_filter_chain_t *vulkan_filter_chain_create_from_preset(
    if (!chain)
       return nullptr;
 
-   for (unsigned i = 0; i < shader->passes; i++)
-   {
-      const video_shader_pass *pass = &shader->pass[i];
-      struct vulkan_filter_chain_pass_info pass_info;
-      memset(&pass_info, 0, sizeof(pass_info));
+   if (shader->luts && !vulkan_filter_chain_load_luts(info, chain.get(), shader.get()))
+      return nullptr;
 
+   shader->num_parameters = 0;
+
+   for (i = 0; i < shader->passes; i++)
+   {
       glslang_output output;
+      struct vulkan_filter_chain_pass_info pass_info;
+      const video_shader_pass *pass      = &shader->pass[i];
+      const video_shader_pass *next_pass =
+         i + 1 < shader->passes ? &shader->pass[i + 1] : nullptr;
+
+      pass_info.scale_type_x  = VULKAN_FILTER_CHAIN_SCALE_ORIGINAL;
+      pass_info.scale_type_y  = VULKAN_FILTER_CHAIN_SCALE_ORIGINAL;
+      pass_info.scale_x       = 0.0f;
+      pass_info.scale_y       = 0.0f;
+      pass_info.rt_format     = VK_FORMAT_UNDEFINED; 
+      pass_info.source_filter = VULKAN_FILTER_CHAIN_LINEAR;
+      pass_info.mip_filter    = VULKAN_FILTER_CHAIN_LINEAR;
+      pass_info.address       = VULKAN_FILTER_CHAIN_ADDRESS_REPEAT;
+      pass_info.max_levels    = 0;
+
       if (!glslang_compile_shader(pass->source.path, &output))
       {
          RARCH_ERR("Failed to compile shader: \"%s\".\n",
                pass->source.path);
          return nullptr;
+      }
+
+      for (auto &meta_param : output.meta.parameters)
+      {
+         if (shader->num_parameters >= GFX_MAX_PARAMETERS)
+         {
+            RARCH_ERR("[Vulkan]: Exceeded maximum number of parameters.\n");
+            return nullptr;
+         }
+
+         auto itr = find_if(shader->parameters, shader->parameters + shader->num_parameters,
+               [&](const video_shader_parameter &param)
+               {
+                  return meta_param.id == param.id;
+               });
+
+         if (itr != shader->parameters + shader->num_parameters)
+         {
+            // Allow duplicate #pragma parameter, but only if they are exactly the same.
+            if (meta_param.desc != itr->desc ||
+                meta_param.initial != itr->initial ||
+                meta_param.minimum != itr->minimum ||
+                meta_param.maximum != itr->maximum ||
+                meta_param.step != itr->step)
+            {
+               RARCH_ERR("[Vulkan]: Duplicate parameters found for \"%s\", but arguments do not match.\n",
+                     itr->id);
+               return nullptr;
+            }
+            chain->add_parameter(i, itr - shader->parameters, meta_param.id);
+         }
+         else
+         {
+            auto &param = shader->parameters[shader->num_parameters];
+            strlcpy(param.id, meta_param.id.c_str(), sizeof(param.id));
+            strlcpy(param.desc, meta_param.desc.c_str(), sizeof(param.desc));
+            param.current = meta_param.initial;
+            param.initial = meta_param.initial;
+            param.minimum = meta_param.minimum;
+            param.maximum = meta_param.maximum;
+            param.step = meta_param.step;
+            chain->add_parameter(i, shader->num_parameters, meta_param.id);
+            shader->num_parameters++;
+         }
       }
 
       chain->set_shader(i,
@@ -2153,6 +2977,17 @@ vulkan_filter_chain_t *vulkan_filter_chain_create_from_preset(
             pass->filter == RARCH_FILTER_LINEAR ? VULKAN_FILTER_CHAIN_LINEAR : 
             VULKAN_FILTER_CHAIN_NEAREST;
       }
+      pass_info.address    = wrap_to_address(pass->wrap);
+      pass_info.max_levels = 1;
+
+      // TODO: Expose max_levels in slangp.
+      // CGP format is a bit awkward in that it uses mipmap_input,
+      // so we much check if next pass needs the mipmapping.
+      if (next_pass && next_pass->mipmap)
+         pass_info.max_levels = ~0u;
+
+      pass_info.mip_filter = pass->filter != RARCH_FILTER_NEAREST && pass_info.max_levels > 1
+         ? VULKAN_FILTER_CHAIN_LINEAR : VULKAN_FILTER_CHAIN_NEAREST;
 
       bool explicit_format = output.meta.rt_format != SLANG_FORMAT_UNKNOWN;
 
@@ -2242,13 +3077,20 @@ vulkan_filter_chain_t *vulkan_filter_chain_create_from_preset(
    if (last_pass_is_fbo)
    {
       struct vulkan_filter_chain_pass_info pass_info;
-      memset(&pass_info, 0, sizeof(pass_info));
-      pass_info.scale_type_x = VULKAN_FILTER_CHAIN_SCALE_VIEWPORT;
-      pass_info.scale_type_y = VULKAN_FILTER_CHAIN_SCALE_VIEWPORT;
-      pass_info.scale_x = 1.0f;
-      pass_info.scale_y = 1.0f;
-      pass_info.rt_format = tmpinfo.swapchain.format;
+
+      pass_info.scale_type_x  = VULKAN_FILTER_CHAIN_SCALE_VIEWPORT;
+      pass_info.scale_type_y  = VULKAN_FILTER_CHAIN_SCALE_VIEWPORT;
+      pass_info.scale_x       = 1.0f;
+      pass_info.scale_y       = 1.0f;
+
+      pass_info.rt_format     = tmpinfo.swapchain.format;
+
       pass_info.source_filter = filter;
+      pass_info.mip_filter    = VULKAN_FILTER_CHAIN_NEAREST;
+      pass_info.address       = VULKAN_FILTER_CHAIN_ADDRESS_CLAMP_TO_EDGE;
+
+      pass_info.max_levels    = 0;
+
       chain->set_pass_info(shader->passes, pass_info);
 
       chain->set_shader(shader->passes,
@@ -2261,6 +3103,9 @@ vulkan_filter_chain_t *vulkan_filter_chain_create_from_preset(
             opaque_frag,
             sizeof(opaque_frag) / sizeof(uint32_t));
    }
+
+   if (!video_shader_resolve_current_parameters(conf.get(), shader.get()))
+      return nullptr;
 
    chain->set_shader_preset(move(shader));
 
@@ -2361,5 +3206,12 @@ void vulkan_filter_chain_build_viewport_pass(
       VkCommandBuffer cmd, const VkViewport *vp, const float *mvp)
 {
    chain->build_viewport_pass(cmd, *vp, mvp);
+}
+
+void vulkan_filter_chain_end_frame(
+      vulkan_filter_chain_t *chain,
+      VkCommandBuffer cmd)
+{
+   chain->end_frame(cmd);
 }
 

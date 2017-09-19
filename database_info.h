@@ -1,8 +1,8 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
- *  Copyright (C) 2013-2015 - Jason Fetters
- * 
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
+ *  Copyright (C) 2016-2017 - Brad Parker
+ *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
  *  ation, either version 3 of the License, or (at your option) any later version.
@@ -23,8 +23,7 @@
 
 #include <file/archive_file.h>
 #include <retro_common_api.h>
-
-#include "libretro-db/libretrodb.h"
+#include <queues/task_queue.h>
 
 RETRO_BEGIN_DECLS
 
@@ -42,9 +41,33 @@ enum database_type
 {
    DATABASE_TYPE_NONE = 0,
    DATABASE_TYPE_ITERATE,
-   DATABASE_TYPE_ITERATE_ZIP,
+   DATABASE_TYPE_ITERATE_ARCHIVE,
+   DATABASE_TYPE_ITERATE_LUTRO,
    DATABASE_TYPE_SERIAL_LOOKUP,
    DATABASE_TYPE_CRC_LOOKUP
+};
+
+enum database_query_type
+{
+   DATABASE_QUERY_NONE = 0,
+   DATABASE_QUERY_ENTRY,
+   DATABASE_QUERY_ENTRY_PUBLISHER,
+   DATABASE_QUERY_ENTRY_DEVELOPER,
+   DATABASE_QUERY_ENTRY_ORIGIN,
+   DATABASE_QUERY_ENTRY_FRANCHISE,
+   DATABASE_QUERY_ENTRY_RATING,
+   DATABASE_QUERY_ENTRY_BBFC_RATING,
+   DATABASE_QUERY_ENTRY_ELSPA_RATING,
+   DATABASE_QUERY_ENTRY_ESRB_RATING,
+   DATABASE_QUERY_ENTRY_PEGI_RATING,
+   DATABASE_QUERY_ENTRY_CERO_RATING,
+   DATABASE_QUERY_ENTRY_ENHANCEMENT_HW,
+   DATABASE_QUERY_ENTRY_EDGE_MAGAZINE_RATING,
+   DATABASE_QUERY_ENTRY_EDGE_MAGAZINE_ISSUE,
+   DATABASE_QUERY_ENTRY_FAMITSU_MAGAZINE_RATING,
+   DATABASE_QUERY_ENTRY_RELEASEDATE_MONTH,
+   DATABASE_QUERY_ENTRY_RELEASEDATE_YEAR,
+   DATABASE_QUERY_ENTRY_MAX_USERS
 };
 
 typedef struct
@@ -53,9 +76,7 @@ typedef struct
    enum database_type type;
    size_t list_ptr;
    struct string_list *list;
-#ifdef HAVE_ZLIB
    file_archive_transfer_t state;
-#endif
 } database_info_handle_t;
 
 typedef struct
@@ -105,15 +126,15 @@ database_info_list_t *database_info_list_new(const char *rdb_path,
 void database_info_list_free(database_info_list_t *list);
 
 database_info_handle_t *database_info_dir_init(const char *dir,
-      enum database_type type);
+      enum database_type type, retro_task_t *task);
 
 database_info_handle_t *database_info_file_init(const char *path,
-      enum database_type type);
+      enum database_type type, retro_task_t *task);
 
 void database_info_free(database_info_handle_t *handle);
 
-int database_info_build_query(
-      char *query, size_t len, const char *label, const char *path);
+int database_info_build_query_enum(
+      char *query, size_t len, enum database_query_type type, const char *path);
 
 /* NOTE: Allocates memory, it is the caller's responsibility to free the
  * memory after it is no longer required. */

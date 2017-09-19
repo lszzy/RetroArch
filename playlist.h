@@ -1,7 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
- *  Copyright (C) 2013-2014 - Jason Fetters
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -21,15 +20,11 @@
 #include <stddef.h>
 
 #include <retro_common_api.h>
+#include <boolean.h>
 
 RETRO_BEGIN_DECLS
 
-typedef struct playlist_entry playlist_entry_t;
 typedef struct content_playlist       playlist_t;
-
-typedef int (playlist_sort_fun_t)(
-      const playlist_entry_t *a,
-      const playlist_entry_t *b);
 
 /**
  * playlist_init:
@@ -67,12 +62,9 @@ void playlist_clear(playlist_t *playlist);
  **/
 size_t playlist_size(playlist_t *playlist);
 
-const char *playlist_entry_get_label(
-      const playlist_entry_t *entry);
-
 /**
  * playlist_get_index:
- * @playlist        	   : Playlist handle.
+ * @playlist               : Playlist handle.
  * @idx                 : Index of playlist entry.
  * @path                : Path of playlist entry.
  * @core_path           : Core path of playlist entry.
@@ -88,6 +80,16 @@ void playlist_get_index(playlist_t *playlist,
       const char **crc32);
 
 /**
+ * playlist_delete_index:
+ * @playlist               : Playlist handle.
+ * @idx                 : Index of playlist entry.
+ * 
+ * Deletes the entry at index: 
+ **/
+void playlist_delete_index(playlist_t *playlist,
+      size_t idx);
+
+/**
  * playlist_push:
  * @playlist        	   : Playlist handle.
  * @path                : Path of new playlist entry.
@@ -96,7 +98,7 @@ void playlist_get_index(playlist_t *playlist,
  *
  * Push entry to top of playlist.
  **/
-void playlist_push(playlist_t *playlist,
+bool playlist_push(playlist_t *playlist,
       const char *path, const char *label,
       const char *core_path, const char *core_name,
       const char *db_name,
@@ -119,10 +121,13 @@ bool playlist_entry_exists(playlist_t *playlist,
       const char *path,
       const char *crc32);
 
+char *playlist_get_conf_path(playlist_t *playlist);
+
+uint32_t playlist_get_size(playlist_t *playlist);
+
 void playlist_write_file(playlist_t *playlist);
 
-void playlist_qsort(playlist_t *playlist,
-      playlist_sort_fun_t *fn);
+void playlist_qsort(playlist_t *playlist);
 
 RETRO_END_DECLS
 

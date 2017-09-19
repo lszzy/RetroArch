@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -17,15 +17,18 @@
 #include <string.h>
 
 #include <compat/strl.h>
-
-#include "frontend_driver.h"
+#include <string/stdstring.h>
 
 #ifdef HAVE_CONFIG_H
 #include "../config.h"
 #endif
 
+#include "frontend_driver.h"
+
 static frontend_ctx_driver_t *frontend_ctx_drivers[] = {
-#if defined(__CELLOS_LV2__)
+#if defined(EMSCRIPTEN)
+   &frontend_ctx_emscripten,
+#elif defined(__CELLOS_LV2__)
    &frontend_ctx_ps3,
 #endif
 #if defined(_XBOX)
@@ -34,14 +37,17 @@ static frontend_ctx_driver_t *frontend_ctx_drivers[] = {
 #if defined(GEKKO)
    &frontend_ctx_gx,
 #endif
+#if defined(WIIU)
+   &frontend_ctx_wiiu,
+#endif
 #if defined(__QNX__)
    &frontend_ctx_qnx,
 #endif
 #if defined(__APPLE__) && defined(__MACH__)
    &frontend_ctx_darwin,
 #endif
-#if defined(__linux__)
-   &frontend_ctx_linux,
+#if defined(__linux__) || (defined(BSD) && !defined(__MACH__))
+   &frontend_ctx_unix,
 #endif
 #if defined(PSP) || defined(VITA)
    &frontend_ctx_psp,
@@ -54,6 +60,9 @@ static frontend_ctx_driver_t *frontend_ctx_drivers[] = {
 #endif
 #ifdef XENON
    &frontend_ctx_xenon,
+#endif
+#ifdef DJGPP
+   &frontend_ctx_dos,
 #endif
    &frontend_ctx_null,
    NULL
@@ -77,7 +86,7 @@ frontend_ctx_driver_t *frontend_ctx_find_driver(const char *ident)
 
    for (i = 0; frontend_ctx_drivers[i]; i++)
    {
-      if (!strcmp(frontend_ctx_drivers[i]->ident, ident))
+      if (string_is_equal(frontend_ctx_drivers[i]->ident, ident))
          return frontend_ctx_drivers[i];
    }
 
@@ -93,16 +102,7 @@ frontend_ctx_driver_t *frontend_ctx_find_driver(const char *ident)
  **/
 frontend_ctx_driver_t *frontend_ctx_init_first(void)
 {
-   unsigned i;
-   frontend_ctx_driver_t *frontend = NULL;
-
-   for (i = 0; frontend_ctx_drivers[i]; i++)
-   {
-      frontend = frontend_ctx_drivers[i];
-      break;
-   }
-
-   return frontend;
+   return frontend_ctx_drivers[0];
 }
 
 bool frontend_driver_get_core_extension(char *s, size_t len)
@@ -129,7 +129,7 @@ bool frontend_driver_get_core_extension(char *s, size_t len)
    strlcpy(s, "pbp", len);
    return true;
 #elif defined(VITA)
-   strlcpy(s, "velf", len);
+   strlcpy(s, "self|bin", len);
    return true;
 #elif defined(_XBOX1)
    strlcpy(s, "xbe", len);
@@ -140,8 +140,14 @@ bool frontend_driver_get_core_extension(char *s, size_t len)
 #elif defined(GEKKO)
    strlcpy(s, "dol", len);
    return true;
+#elif defined(HW_WUP)
+   strlcpy(s, "rpx|elf", len);
+   return true;
 #elif defined(__linux__)
    strlcpy(s, "elf", len);
+   return true;
+#elif defined(_3DS)
+   strlcpy(s, "core", len);
    return true;
 #else
    return false;
@@ -163,7 +169,7 @@ bool frontend_driver_get_salamander_basename(char *s, size_t len)
    strlcpy(s, "EBOOT.PBP", len);
    return true;
 #elif defined(VITA)
-   strlcpy(s, "default.velf", len);
+   strlcpy(s, "eboot.bin", len);
    return true;
 #elif defined(_XBOX1)
    strlcpy(s, "default.xbe", len);
@@ -173,6 +179,12 @@ bool frontend_driver_get_salamander_basename(char *s, size_t len)
    return true;
 #elif defined(HW_RVL)
    strlcpy(s, "boot.dol", len);
+   return true;
+#elif defined(HW_WUP)
+   strlcpy(s, "retroarch.rpx", len);
+   return true;
+#elif defined(_3DS)
+   strlcpy(s, "retroarch.core", len);
    return true;
 #else
    return false;
@@ -187,13 +199,13 @@ frontend_ctx_driver_t *frontend_get_ptr(void)
    return current_frontend_ctx;
 }
 
-int frontend_driver_parse_drive_list(void *data)
+int frontend_driver_parse_drive_list(void *data, bool load_content)
 {
    frontend_ctx_driver_t *frontend = frontend_get_ptr();
 
    if (!frontend || !frontend->parse_drive_list)
       return -1;
-   return frontend->parse_drive_list(data);
+   return frontend->parse_drive_list(data, load_content);
 }
 
 void frontend_driver_content_loaded(void)
@@ -323,5 +335,53 @@ uint64_t frontend_driver_get_used_memory(void)
    if (!frontend || !frontend->get_used_mem)
       return 0;
    return frontend->get_used_mem();
+}
+
+void frontend_driver_install_signal_handler(void)
+{
+   frontend_ctx_driver_t *frontend = frontend_get_ptr();
+   if (!frontend || !frontend->install_signal_handler)
+      return;
+   frontend->install_signal_handler();
+}
+
+int frontend_driver_get_signal_handler_state(void)
+{
+   frontend_ctx_driver_t *frontend = frontend_get_ptr();
+   if (!frontend || !frontend->get_signal_handler_state)
+      return -1;
+   return frontend->get_signal_handler_state();
+}
+
+void frontend_driver_set_signal_handler_state(int value)
+{
+   frontend_ctx_driver_t *frontend = frontend_get_ptr();
+   if (!frontend || !frontend->set_signal_handler_state)
+      return;
+   frontend->set_signal_handler_state(value);
+}
+
+void frontend_driver_attach_console(void)
+{
+   frontend_ctx_driver_t *frontend = frontend_get_ptr();
+   if (!frontend || !frontend->attach_console)
+      return;
+   frontend->attach_console();
+}
+
+void frontend_driver_detach_console(void)
+{
+   frontend_ctx_driver_t *frontend = frontend_get_ptr();
+   if (!frontend || !frontend->detach_console)
+      return;
+   frontend->detach_console();
+}
+
+void frontend_driver_destroy_signal_handler_state(void)
+{
+   frontend_ctx_driver_t *frontend = frontend_get_ptr();
+   if (!frontend || !frontend->destroy_signal_handler_state)
+      return;
+   frontend->destroy_signal_handler_state();
 }
 #endif

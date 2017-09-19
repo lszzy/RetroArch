@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -23,6 +23,8 @@
 #include <retro_common_api.h>
 #include <retro_miscellaneous.h>
 #include <formats/image.h>
+
+#include "input_driver.h"
 
 RETRO_BEGIN_DECLS
 
@@ -94,6 +96,8 @@ enum overlay_image_transfer_status
 
 struct overlay
 {
+   unsigned id;
+
    struct overlay_desc *descs;
    size_t size;
    size_t pos;
@@ -182,6 +186,10 @@ typedef struct
     struct overlay *overlays;
     struct overlay *active;
     size_t size;
+    bool hide_in_menu;
+    bool overlay_enable;
+    float overlay_opacity;
+    float overlay_scale;
 } overlay_task_data_t;
 
 /**
@@ -189,7 +197,7 @@ typedef struct
  *
  * Frees overlay handle.
  **/
-void input_overlay_free(void);
+void input_overlay_free(input_overlay_t *ol);
 
 void input_overlay_free_overlay(struct overlay *overlay);
 
@@ -206,7 +214,7 @@ void input_overlay_init(void);
  * Sets a modulating factor for alpha channel. Default is 1.0.
  * The alpha factor is applied for all overlays.
  **/
-void input_overlay_set_alpha_mod(float mod);
+void input_overlay_set_alpha_mod(input_overlay_t *ol, float mod);
 
 /**
  * input_overlay_set_scale_factor:
@@ -222,7 +230,7 @@ void input_overlay_set_scale_factor(input_overlay_t *ol, float scale);
  * Switch to the next available overlay
  * screen.
  **/
-void input_overlay_next(float opacity);
+void input_overlay_next(input_overlay_t *ol, float opacity);
 
 /*
  * input_poll_overlay:
@@ -230,17 +238,21 @@ void input_overlay_next(float opacity);
  *
  * Poll pressed buttons/keys on currently active overlay.
  **/
-void input_poll_overlay(input_overlay_t *ol, float opacity);
+void input_poll_overlay(input_overlay_t *ol, float opacity, unsigned analog_dpad_mode,
+      float axis_threshold);
 
-void input_state_overlay(int16_t *ret,
-      unsigned port, unsigned device, unsigned idx,
+void input_state_overlay(input_overlay_t *ol,
+      int16_t *ret, unsigned port, unsigned device, unsigned idx,
       unsigned id);
 
-bool input_overlay_key_pressed(int key);
+bool input_overlay_key_pressed(input_overlay_t *ol, int key);
 
 bool input_overlay_is_alive(input_overlay_t *ol);
 
 void input_overlay_loaded(void *task_data, void *user_data, const char *err);
+
+/* FIXME - temporary. Globals are bad */
+extern input_overlay_t *overlay_ptr;
 
 RETRO_END_DECLS
 

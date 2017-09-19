@@ -7,10 +7,10 @@
 
 #define kCrcPoly 0xEDB88320
 
-#ifdef MY_CPU_LE
-#define CRC_NUM_TABLES 8
-#else
+#ifdef MSB_FIRST
 #define CRC_NUM_TABLES 1
+#else
+#define CRC_NUM_TABLES 8
 #endif
 
 typedef uint32_t (MY_FAST_CALL *CRC_FUNC)(uint32_t v, const void *data, size_t size, const uint32_t *table);
@@ -63,12 +63,14 @@ void MY_FAST_CALL CrcGenerateTable(void)
 #else
    for (; i < 256 * CRC_NUM_TABLES; i++)
    {
-      uint32_t r = g_CrcTable[i - 256];
+      uint32_t r    = g_CrcTable[i - 256];
       g_CrcTable[i] = g_CrcTable[r & 0xFF] ^ (r >> 8);
    }
-   g_CrcUpdate = CrcUpdateT4;
+
 #ifdef MY_CPU_X86_OR_AMD64
    g_CrcUpdate = CrcUpdateT8;
+#else
+   g_CrcUpdate = CrcUpdateT4;
 #endif
 #endif
 }

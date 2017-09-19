@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *  Copyright (C) 2012-2014 - OV2
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
@@ -19,17 +19,27 @@
 #include <xtl.h>
 #endif
 
-#include "../d3d/d3d.h"
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
+
+#include <compat/strl.h>
+#include <string/stdstring.h>
+
+#include "../drivers/d3d.h"
 #include "../common/win32_common.h"
 
-#include "../../runloop.h"
+#include "../../configuration.h"
 #include "../../verbosity.h"
+#include "../../ui/ui_companion_driver.h"
 
 #ifdef _MSC_VER
 #ifndef _XBOX
 #pragma comment( lib, "d3d9" )
 #pragma comment( lib, "d3dx9" )
+#ifdef HAVE_CG
 #pragma comment( lib, "cgd3d9" )
+#endif
 #pragma comment( lib, "dxguid" )
 #endif
 #endif
@@ -66,7 +76,7 @@ static bool gfx_ctx_d3d_set_resize(void *data, unsigned new_width, unsigned new_
    return true;
 }
 
-static void gfx_ctx_d3d_swap_buffers(void *data)
+static void gfx_ctx_d3d_swap_buffers(void *data, void *data2)
 {
    d3d_video_t      *d3d = (d3d_video_t*)data;
    LPDIRECT3DDEVICE d3dr = (LPDIRECT3DDEVICE)d3d->dev;
@@ -74,58 +84,77 @@ static void gfx_ctx_d3d_swap_buffers(void *data)
    d3d_swap(d3d, d3dr);
 }
 
-static void gfx_ctx_d3d_update_title(void *data)
+static void gfx_ctx_d3d_update_title(void *data, void *data2)
 {
-   char buf[128]             = {0};
-   char buffer_fps[128]      = {0};
-   settings_t *settings      = config_get_ptr();
-   const ui_window_t *window = ui_companion_driver_get_window_ptr();
-
-   if (window && video_monitor_get_fps(buf, sizeof(buf),
-            buffer_fps, sizeof(buffer_fps)))
-   {
-#ifndef _XBOX
-      window->set_title(&main_window, buf);
-#endif
-   }
-
-   if (settings->fps_show)
-   {
+   video_frame_info_t *video_info = (video_frame_info_t*)data2;
 #ifdef _XBOX
+   const ui_window_t *window      = NULL;
+#else
+   const ui_window_t *window      = ui_companion_driver_get_window_ptr();
+#endif
+
+   if (video_info->fps_show)
+   {
       MEMORYSTATUS stat;
-      char mem[128] = {0};
+      char mem[128];
+
+      mem[0] = '\0';
 
       GlobalMemoryStatus(&stat);
       snprintf(mem, sizeof(mem), "|| MEM: %.2f/%.2fMB",
             stat.dwAvailPhys/(1024.0f*1024.0f), stat.dwTotalPhys/(1024.0f*1024.0f));
-      strlcat(buffer_fps, mem, sizeof(buffer_fps));
-#endif
-      runloop_msg_queue_push(buffer_fps, 1, 1, false);
+      strlcat(video_info->fps_text, mem, sizeof(video_info->fps_text));
    }
+
+#ifndef _XBOX
+   if (window)
+   {
+      char title[128];
+
+      title[0] = '\0';
+
+      video_driver_get_window_title(title, sizeof(title));
+
+      if (title[0])
+         window->set_title(&main_window, title);
+   }
+#endif
 }
 
 static void gfx_ctx_d3d_show_mouse(void *data, bool state)
 {
    (void)data;
 
+#ifndef _XBOX
    win32_show_cursor(state);
+#endif
 }
 
 static void gfx_ctx_d3d_check_window(void *data, bool *quit,
       bool *resize, unsigned *width,
-      unsigned *height, unsigned frame_count)
+      unsigned *height, bool is_shutdown)
 {
+#ifndef _XBOX
    win32_check_window(quit, resize, width, height);
+#endif
 }
 
 static bool gfx_ctx_d3d_has_focus(void *data)
 {
+#ifdef _XBOX
+   return true;
+#else
    return win32_has_focus();
+#endif
 }
 
 static bool gfx_ctx_d3d_suppress_screensaver(void *data, bool enable)
 {
+#ifdef _XBOX
+   return true;
+#else
    return win32_suppress_screensaver(data, enable);
+#endif
 }
 
 static bool gfx_ctx_d3d_has_windowed(void *data)
@@ -155,9 +184,11 @@ static bool gfx_ctx_d3d_bind_api(void *data,
 #endif
 }
 
-static void *gfx_ctx_d3d_init(void *video_driver)
+static void *gfx_ctx_d3d_init(video_frame_info_t *video_info, void *video_driver)
 {
+#ifndef _XBOX
    win32_monitor_init();
+#endif
 
    return video_driver;
 }
@@ -168,25 +199,45 @@ static void gfx_ctx_d3d_destroy(void *data)
 }
 
 static void gfx_ctx_d3d_input_driver(void *data,
+      const char *name,
       const input_driver_t **input, void **input_data)
 {
 #ifdef _XBOX
-   void *xinput = input_xinput.init();
-   *input       = xinput ? (const input_driver_t*)&input_xinput : NULL;
-   *input_data  = xinput;
+   void *xinput         = input_xinput.init(name);
+   *input               = xinput ? (const input_driver_t*)&input_xinput : NULL;
+   *input_data          = xinput;
 #else
-   dinput       = input_dinput.init();
-   *input       = dinput ? &input_dinput : NULL;
-   *input_data  = dinput;
+   settings_t *settings = config_get_ptr();
+
+#if _WIN32_WINNT >= 0x0501
+   /* winraw only available since XP */
+   if (string_is_equal_fast(settings->arrays.input_driver, "raw", 4))
+   {
+      *input_data = input_winraw.init(name);
+      if (*input_data)
+      {
+         *input = &input_winraw;
+         dinput = NULL;
+         return;
+      }
+   }
+#endif
+
+   dinput               = input_dinput.init(name);
+   *input               = dinput ? &input_dinput : NULL;
+   *input_data          = dinput;
 #endif
    (void)data;
 }
 
 static bool gfx_ctx_d3d_set_video_mode(void *data,
+      video_frame_info_t *video_info,
       unsigned width, unsigned height,
       bool fullscreen)
 {
+#ifndef _XBOX
    win32_show_cursor(!fullscreen);
+#endif
 
    return true;
 }
@@ -299,7 +350,11 @@ static void gfx_ctx_d3d_swap_interval(void *data, unsigned interval)
 static bool gfx_ctx_d3d_get_metrics(void *data,
 	enum display_metric_types type, float *value)
 {
+#ifdef _XBOX
+   return false;
+#else
    return win32_get_metrics(data, type, value);
+#endif
 }
 
 static uint32_t gfx_ctx_d3d_get_flags(void *data)
@@ -341,5 +396,7 @@ const gfx_ctx_driver_t gfx_ctx_d3d = {
    gfx_ctx_d3d_show_mouse,
    "d3d",
    gfx_ctx_d3d_get_flags,
-   gfx_ctx_d3d_set_flags
+   gfx_ctx_d3d_set_flags,
+   NULL,
+   NULL
 };

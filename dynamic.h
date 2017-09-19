@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -23,33 +23,8 @@
 
 #include "core_type.h"
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
-
 RETRO_BEGIN_DECLS
 
-/**
- * libretro_get_environment_info:
- * @func                         : Function pointer for get_environment_info.
- * @load_no_content              : If true, core should be able to auto-start
- *                                 without any content loaded.
- *
- * Sets environment callback in order to get statically known 
- * information from it.
- *
- * Fetched via environment callbacks instead of
- * retro_get_system_info(), as this info is part of extensions.
- *
- * Should only be called once right after core load to 
- * avoid overwriting the "real" environ callback.
- *
- * For statically linked cores, pass retro_set_environment as argument.
- */
-void libretro_get_environment_info(void (*)(retro_environment_t),
-      bool *load_no_content);
-
-#ifdef HAVE_DYNAMIC
 /**
  * libretro_get_system_info:
  * @path                         : Path to libretro library.
@@ -64,21 +39,6 @@ void libretro_get_environment_info(void (*)(retro_environment_t),
  **/
 bool libretro_get_system_info(const char *path,
       struct retro_system_info *info, bool *load_no_content);
-#else
-/**
- * libretro_get_system_info_static:
- * @info                         : System info information.
- * @load_no_content              : If true, core should be able to auto-start
- *                                 without any content loaded.
- *
- * Gets system info from the current statically linked libretro library.
- * The struct returned must be freed as strings are allocated dynamically.
- *
- * Returns: true (1) if successful, otherwise false (0).
- **/
-bool libretro_get_system_info_static(struct retro_system_info *info,
-      bool *load_no_content);
-#endif
 
 /**
  * libretro_free_system_info:
@@ -87,15 +47,6 @@ bool libretro_get_system_info_static(struct retro_system_info *info,
  * Frees system information.
  **/
 void libretro_free_system_info(struct retro_system_info *info);
-
-/**
- * libretro_get_current_core_pathname:
- * @name                         : Sanitized name of libretro core.
- * @size                         : Size of @name
- *
- * Transforms a library id to a name suitable as a pathname.
- **/
-void libretro_get_current_core_pathname(char *name, size_t size);
 
 const struct retro_subsystem_info *libretro_find_subsystem_info(
       const struct retro_subsystem_info *info,
@@ -156,7 +107,17 @@ struct retro_core_t
    unsigned (*retro_get_region)(void);
    void *(*retro_get_memory_data)(unsigned);
    size_t (*retro_get_memory_size)(unsigned);
+
+   unsigned poll_type;
+   bool inited;
+   bool symbols_inited;
+   bool game_loaded;
+   bool input_polled;
+   bool has_set_input_descriptors;
+   uint64_t serialization_quirks_v;
 };
+
+bool libretro_get_shared_context(void);
 
 /**
  * init_libretro_sym:
@@ -165,9 +126,10 @@ struct retro_core_t
  *                                load dummy symbols.
  *
  * Initializes libretro symbols and
- * setups environment callback functions.
+ * setups environment callback functions. Returns true on success,
+ * or false if symbols could not be loaded.
  **/
-void init_libretro_sym(enum rarch_core_type type,
+bool init_libretro_sym(enum rarch_core_type type,
       struct retro_core_t *core);
 
 /**

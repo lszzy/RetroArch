@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -16,8 +16,13 @@
 
 #include <xtl.h>
 
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
+
+#include "../drivers/d3d.h"
+
 #include "../font_driver.h"
-#include "../../general.h"
 
 typedef struct
 {
@@ -27,7 +32,8 @@ typedef struct
 } xfonts_t;
 
 static void *xfonts_init_font(void *video_data,
-      const char *font_path, float font_size)
+      const char *font_path, float font_size,
+      bool is_threaded)
 {
    xfonts_t *xfont = (xfonts_t*)calloc(1, sizeof(*xfont));
 
@@ -48,7 +54,7 @@ static void *xfonts_init_font(void *video_data,
    return xfont;
 }
 
-static void xfonts_free_font(void *data)
+static void xfonts_free_font(void *data, bool is_threaded)
 {
    xfonts_t *font = (xfonts_t*)data;
 
@@ -58,12 +64,13 @@ static void xfonts_free_font(void *data)
    font = NULL;
 }
 
-static void xfonts_render_msg(void *data, const char *msg,
+static void xfonts_render_msg(
+      video_frame_info_t *video_info,
+      void *data, const char *msg,
       const void *userdata)
 {
    wchar_t str[PATH_MAX_LENGTH];
    float x, y;
-   settings_t *settings = config_get_ptr();
    const struct font_params *params = (const struct font_params*)userdata;
    xfonts_t *xfonts = (xfonts_t*)data;
 
@@ -74,8 +81,8 @@ static void xfonts_render_msg(void *data, const char *msg,
    }
    else
    {
-      x = settings->video.msg_pos_x;
-      y = settings->video.msg_pos_y;
+      x = video_info->font_msg_pos_x;
+      y = video_info->font_msg_pos_y;
    }
 
    xfonts->d3d->dev->GetBackBuffer(-1, D3DBACKBUFFER_TYPE_MONO, &xfonts->surf);

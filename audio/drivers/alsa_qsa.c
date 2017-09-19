@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -17,9 +17,9 @@
 #define ALSA_PCM_NEW_HW_PARAMS_API
 #define ALSA_PCM_NEW_SW_PARAMS_API
 #include <sys/asoundlib.h>
+#include <retro_math.h>
 
 #include "../audio_driver.h"
-#include "../../configuration.h"
 
 #define MAX_FRAG_SIZE 3072
 #define DEFAULT_RATE 48000
@@ -46,14 +46,14 @@ typedef struct alsa
 typedef long snd_pcm_sframes_t;
 
 static void *alsa_qsa_init(const char *device,
-      unsigned rate, unsigned latency)
+      unsigned rate, unsigned latency, unsigned block_frames,
+      unsigned *new_rate)
 {
    int err, card, dev, i;
-   snd_pcm_channel_params_t params = {0};
    snd_pcm_channel_info_t pi;
-   snd_pcm_channel_setup_t setup = {0};
-   settings_t *settings = config_get_ptr();
-   alsa_t *alsa = (alsa_t*)calloc(1, sizeof(alsa_t));
+   snd_pcm_channel_params_t params = {0};
+   snd_pcm_channel_setup_t setup   = {0};
+   alsa_t *alsa                    = (alsa_t*)calloc(1, sizeof(alsa_t));
    if (!alsa)
       return NULL;
 
@@ -122,8 +122,8 @@ static void *alsa_qsa_init(const char *device,
       goto error;
    }
 
-   if (settings->audio.block_frames)
-      alsa->buf_size = settings->audio.block_frames * 4;
+   if (block_frames)
+      alsa->buf_size = block_frames * 4;
    else
       alsa->buf_size = next_pow2(32 * latency);
 
@@ -164,9 +164,9 @@ error:
 
 static int check_pcm_status(void *data, int channel_type)
 {
-   alsa_t *alsa = (alsa_t*)data;
    snd_pcm_channel_status_t status;
-   int ret = EOK;
+   alsa_t *alsa = (alsa_t*)data;
+   int ret      = EOK;
 
    memset(&status, 0, sizeof (status));
    status.channel = channel_type;
@@ -291,7 +291,7 @@ static bool alsa_qsa_alive(void *data)
    return false;
 }
 
-static bool alsa_qsa_start(void *data)
+static bool alsa_qsa_start(void *data, bool is_shutdown)
 {
    alsa_t *alsa = (alsa_t*)data;
 

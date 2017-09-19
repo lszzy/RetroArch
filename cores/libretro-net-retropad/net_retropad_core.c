@@ -17,11 +17,12 @@
 #include <stdarg.h>
 #include <string.h>
 #include <math.h>
- 
+
 #include <net/net_compat.h>
 #include <net/net_socket.h>
 
 #include <retro_miscellaneous.h>
+#include <retro_timers.h>
 
 #include <libretro.h>
 
@@ -36,11 +37,42 @@
 #define NETRETROPAD_CORE_PREFIX(s) s
 #endif
 
+#include "remotepad.h"
+
+#define DESC_NUM_PORTS(desc) ((desc)->port_max - (desc)->port_min + 1)
+#define DESC_NUM_INDICES(desc) ((desc)->index_max - (desc)->index_min + 1)
+#define DESC_NUM_IDS(desc) ((desc)->id_max - (desc)->id_min + 1)
+
+#define DESC_OFFSET(desc, port, index, id) ( \
+   port * ((desc)->index_max - (desc)->index_min + 1) * ((desc)->id_max - (desc)->id_min + 1) + \
+   index * ((desc)->id_max - (desc)->id_min + 1) + \
+   id \
+)
+
+struct descriptor {
+   int device;
+   int port_min;
+   int port_max;
+   int index_min;
+   int index_max;
+   int id_min;
+   int id_max;
+   uint16_t *value;
+};
+
+struct remote_joypad_message {
+   int port;
+   int device;
+   int index;
+   int id;
+   uint16_t state;
+};
+
 static int s;
 static int port;
 static char server[64];
 static struct sockaddr_in si_other;
- 
+
 static struct retro_log_callback logger;
 
 static retro_log_printf_t NETRETROPAD_CORE_PREFIX(log_cb);
@@ -53,9 +85,65 @@ static retro_input_state_t NETRETROPAD_CORE_PREFIX(input_state_cb);
 
 static uint16_t *frame_buf;
 
+static struct descriptor joypad = {
+   .device = RETRO_DEVICE_JOYPAD,
+   .port_min = 0,
+   .port_max = 0,
+   .index_min = 0,
+   .index_max = 0,
+   .id_min = RETRO_DEVICE_ID_JOYPAD_B,
+   .id_max = RETRO_DEVICE_ID_JOYPAD_R3
+};
+
+static struct descriptor analog = {
+   .device = RETRO_DEVICE_ANALOG,
+   .port_min = 0,
+   .port_max = 0,
+   .index_min = RETRO_DEVICE_INDEX_ANALOG_LEFT,
+   .index_max = RETRO_DEVICE_INDEX_ANALOG_RIGHT,
+   .id_min = RETRO_DEVICE_ID_ANALOG_X,
+   .id_max = RETRO_DEVICE_ID_ANALOG_Y
+};
+
+static struct descriptor *descriptors[] = {
+   &joypad,
+   &analog
+};
+
 void NETRETROPAD_CORE_PREFIX(retro_init)(void)
 {
+   unsigned i;
+
    frame_buf = (uint16_t*)calloc(320 * 240, sizeof(uint16_t));
+
+   if (frame_buf)
+   {
+      unsigned rle, runs, count;
+      uint16_t *pixel = frame_buf + 49 * 320 + 32;
+
+      for (rle = 0; rle < sizeof(body); )
+      {
+         uint16_t color = 0;
+
+         for (runs = body[rle++]; runs > 0; runs--)
+         {
+            for (count = body[rle++]; count > 0; count--)
+               *pixel++ = color;
+
+            color = 0x4208 - color;
+         }
+
+         pixel += 65;
+      }
+   }
+
+   /* Allocate descriptor values */
+   for (i = 0; i < ARRAY_SIZE(descriptors); i++)
+   {
+      struct descriptor *desc = descriptors[i];
+      int                size = DESC_NUM_PORTS(desc) * DESC_NUM_INDICES(desc) * DESC_NUM_IDS(desc);
+      descriptors[i]->value   = (uint16_t*)calloc(size, sizeof(uint16_t));
+   }
 
    NETRETROPAD_CORE_PREFIX(log_cb)(RETRO_LOG_INFO, "Initialising sockets...\n");
    network_init();
@@ -63,9 +151,18 @@ void NETRETROPAD_CORE_PREFIX(retro_init)(void)
 
 void NETRETROPAD_CORE_PREFIX(retro_deinit)(void)
 {
+   unsigned i;
+
    if (frame_buf)
       free(frame_buf);
    frame_buf = NULL;
+
+   /* Free descriptor values */
+   for (i = 0; i < ARRAY_SIZE(descriptors); i++)
+   {
+      free(descriptors[i]->value);
+      descriptors[i]->value = NULL;
+   }
 }
 
 unsigned NETRETROPAD_CORE_PREFIX(retro_api_version)(void)
@@ -103,38 +200,66 @@ void NETRETROPAD_CORE_PREFIX(retro_get_system_av_info)(
    info->geometry.aspect_ratio = 4.0 / 3.0;
 }
 
-
-static unsigned retropad_update_input(void)
+static void retropad_update_input(void)
 {
-   unsigned value = 0;
+   unsigned i;
+
+   /* Poll input */
    NETRETROPAD_CORE_PREFIX(input_poll_cb)();
 
-   if (NETRETROPAD_CORE_PREFIX(input_state_cb)(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B))
-      value += 1;
-   if (NETRETROPAD_CORE_PREFIX(input_state_cb)(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A))
-      value += 2;
-   if (NETRETROPAD_CORE_PREFIX(input_state_cb)(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT))
-      value += pow(2, 2);
-   if (NETRETROPAD_CORE_PREFIX(input_state_cb)(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START))
-      value += pow(2, 3);
-   if (NETRETROPAD_CORE_PREFIX(input_state_cb)(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP))
-      value += pow(2, 4);
-   if (NETRETROPAD_CORE_PREFIX(input_state_cb)(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN))
-      value += pow(2, 5);
-   if (NETRETROPAD_CORE_PREFIX(input_state_cb)(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT))
-      value += pow(2, 6);
-   if (NETRETROPAD_CORE_PREFIX(input_state_cb)(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT))
-      value += pow(2, 7);
-   if (NETRETROPAD_CORE_PREFIX(input_state_cb)(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y))
-      value += pow(2, 8);
-   if (NETRETROPAD_CORE_PREFIX(input_state_cb)(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X))
-      value += pow(2, 9);
-   if (NETRETROPAD_CORE_PREFIX(input_state_cb)(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L))
-      value += pow(2, 10);
-   if (NETRETROPAD_CORE_PREFIX(input_state_cb)(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R))
-      value += pow(2, 11);
+   /* Parse descriptors */
+   for (i = 0; i < ARRAY_SIZE(descriptors); i++)
+   {
+      int port;
+      /* Get current descriptor */
+      struct descriptor *desc = descriptors[i];
 
-   return value;
+      /* Go through range of ports/indices/IDs */
+      for (port = desc->port_min; port <= desc->port_max; port++)
+      {
+         int index;
+
+         for (index = desc->index_min; index <= desc->index_max; index++)
+         {
+            int id;
+
+            for (id = desc->id_min; id <= desc->id_max; id++)
+            {
+               struct remote_joypad_message msg;
+
+               /* Compute offset into array */
+               int offset     = DESC_OFFSET(desc, port, index, id);
+
+               /* Get old state */
+               uint16_t old   = desc->value[offset];
+
+               /* Get new state */
+               uint16_t state = NETRETROPAD_CORE_PREFIX(input_state_cb)(
+                     port,
+                     desc->device,
+                     index,
+                     id);
+
+               /* Continue if state is unchanged */
+               if (state == old)
+                  continue;
+
+               /* Update state */
+               desc->value[offset] = state;
+
+               /* Attempt to send updated state */
+               msg.port            = port;
+               msg.device          = desc->device;
+               msg.index           = index;
+               msg.id              = id;
+               msg.state           = state;
+
+               if (sendto(s, (char*)&msg, sizeof(msg), 0, (struct sockaddr *)&si_other, sizeof(si_other)) == -1)
+                  NETRETROPAD_CORE_PREFIX(log_cb)(RETRO_LOG_INFO, "Error sending data!\n");
+            }
+         }
+      }
+   }
 }
 
 void NETRETROPAD_CORE_PREFIX(retro_set_environment)(retro_environment_t cb)
@@ -212,21 +337,52 @@ void NETRETROPAD_CORE_PREFIX(retro_reset)(void)
 
 void NETRETROPAD_CORE_PREFIX(retro_run)(void)
 {
-   unsigned i;
-   char message[64];
-   unsigned input_state = retropad_update_input();
+   int i;
+   unsigned rle;
+   unsigned input_state = 0;
+   uint16_t *pixel      = frame_buf + 49 * 320 + 32;
 
-   if (input_state > 0)
+   /* Update input states and send them if needed */
+   retropad_update_input();
+
+   /* Combine RetroPad input states into one value */
+   for (i = joypad.id_min; i <= joypad.id_max; i++)
    {
-      snprintf(message, sizeof(message), "%d", input_state);
-
-      /* send the message */
-      if (sendto(s, message, strlen(message) , 0 , (struct sockaddr *) &si_other, sizeof(si_other))==-1)
-          NETRETROPAD_CORE_PREFIX(log_cb)(RETRO_LOG_INFO, "Error sending data\n");
+      int offset = DESC_OFFSET(&joypad, 0, 0, i);
+      if (joypad.value[offset])
+         input_state |= 1 << i;
    }
-   for (i = 0; i < 320 * 240; i++)
-      frame_buf[i] = 4 << 5;
+
+   for (rle = 0; rle < sizeof(retropad_buttons); )
+   {
+      unsigned runs;
+      char      paint = 0;
+
+      for (runs = retropad_buttons[rle++]; runs > 0; runs--)
+      {
+         unsigned button = paint ? 1 << retropad_buttons[rle++] : 0;
+
+         if (paint)
+         {
+            unsigned count;
+            uint16_t color = (input_state & button) ? 0x0500 : 0xffff;
+
+            for (count = retropad_buttons[rle++]; count > 0; count--)
+               *pixel++ = color;
+         }
+         else
+            pixel += retropad_buttons[rle++];
+
+         paint = !paint;
+      }
+
+      pixel += 65;
+   }
+
+
    NETRETROPAD_CORE_PREFIX(video_cb)(frame_buf, 320, 240, 640);
+
+   retro_sleep(4);
 }
 
 bool NETRETROPAD_CORE_PREFIX(retro_load_game)(const struct retro_game_info *info)
@@ -251,7 +407,7 @@ bool NETRETROPAD_CORE_PREFIX(retro_load_game)(const struct retro_game_info *info
    in_target.server = server;
    in_target.domain = SOCKET_DOMAIN_INET;
 
-   socket_set_target(&si_other, &in_target); 
+   socket_set_target(&si_other, &in_target);
 
    NETRETROPAD_CORE_PREFIX(log_cb)(RETRO_LOG_INFO, "Server IP Address: %s\n" , server);
 
@@ -317,5 +473,3 @@ void NETRETROPAD_CORE_PREFIX(retro_cheat_set)(unsigned idx,
    (void)enabled;
    (void)code;
 }
-
-

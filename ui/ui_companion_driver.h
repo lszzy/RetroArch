@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -217,6 +217,8 @@ const ui_window_t *ui_companion_driver_get_window_ptr(void);
 const ui_application_t *ui_companion_driver_get_application_ptr(void);
 
 void *ui_companion_driver_get_main_window(void);
+
+const char *ui_companion_driver_get_ident(void);
 
 RETRO_END_DECLS
 

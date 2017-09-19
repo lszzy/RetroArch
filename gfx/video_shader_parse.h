@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -81,11 +81,11 @@ struct gfx_fbo_scale
    enum gfx_scale_type type_y;
    float scale_x;
    float scale_y;
-   unsigned abs_x;
-   unsigned abs_y;
    bool fp_fbo;
    bool srgb_fbo;
    bool valid;
+   unsigned abs_x;
+   unsigned abs_y;
 };
 
 struct video_shader_parameter
@@ -113,19 +113,19 @@ struct video_shader_pass
 
    char alias[64];
    struct gfx_fbo_scale fbo;
-   unsigned filter;
    enum gfx_wrap_type wrap;
-   unsigned frame_count_mod;
    bool mipmap;
+   unsigned filter;
+   unsigned frame_count_mod;
 };
 
 struct video_shader_lut
 {
    char id[64];
    char path[PATH_MAX_LENGTH];
-   unsigned filter;
    enum gfx_wrap_type wrap;
    bool mipmap;
+   unsigned filter;
 };
 
 /* This is pretty big, shouldn't be put on the stack.
@@ -134,27 +134,27 @@ struct video_shader
 {
    enum rarch_shader_type type;
 
-   bool modern; /* Only used for XML shaders. */
    char prefix[64];
-
-   unsigned passes;
-   struct video_shader_pass pass[GFX_MAX_SHADERS];
-
-   unsigned luts;
-   struct video_shader_lut lut[GFX_MAX_TEXTURES];
-
-   struct video_shader_parameter parameters[GFX_MAX_PARAMETERS];
-   unsigned num_parameters;
-
-   unsigned variables;
-   struct state_tracker_uniform_info variable[GFX_MAX_VARIABLES];
+   char script_class[512];
    char script_path[PATH_MAX_LENGTH];
    char *script; /* Dynamically allocated. Must be free'd. Only used by XML. */
-   char script_class[512];
 
+   bool modern; /* Only used for XML shaders. */
+
+   unsigned passes;
+   unsigned luts;
+   unsigned num_parameters;
+   unsigned variables;
    /* If < 0, no feedback pass is used. Otherwise,
     * the FBO after pass #N is passed a texture to next frame. */
    int feedback_pass;
+
+   struct video_shader_pass pass[GFX_MAX_SHADERS];
+
+   struct video_shader_lut lut[GFX_MAX_TEXTURES];
+
+   struct video_shader_parameter parameters[GFX_MAX_PARAMETERS];
+   struct state_tracker_uniform_info variable[GFX_MAX_VARIABLES];
 };
 
 /** 
@@ -191,6 +191,18 @@ void video_shader_write_conf_cgp(config_file_t *conf,
  **/
 void video_shader_resolve_relative(struct video_shader *shader,
       const char *ref_path);
+
+/** 
+ * video_shader_resolve_parameters:
+ * @conf              : Preset file to read from.
+ * @shader            : Shader passes handle.
+ *
+ * Reads the current value for all parameters from config file.
+ *
+ * Returns: true (1) if successful, otherwise false (0).
+ **/
+bool video_shader_resolve_current_parameters(config_file_t *conf,
+      struct video_shader *shader);
 
 /** 
  * video_shader_resolve_parameters:

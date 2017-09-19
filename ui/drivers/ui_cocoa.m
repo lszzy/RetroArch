@@ -1,6 +1,6 @@
 /* RetroArch - A frontend for libretro.
- *  Copyright (C) 2013-2014 - Jason Fetters
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ * Copyright (C) 2013-2014 - Jason Fetters
+ * Copyright (C) 2011-2017 - Daniel De Matteis
  *
  * RetroArch is free software: you can redistribute it and/or modify it under the terms
  * of the GNU General Public License as published by the Free Software Found-
@@ -24,20 +24,22 @@
 #include <file/file_path.h>
 #include <string/stdstring.h>
 #include <queues/task_queue.h>
+#include <retro_timers.h>
 
 #include "cocoa/cocoa_common.h"
 #include "../ui_companion_driver.h"
 #include "../../input/drivers/cocoa_input.h"
 #include "../../input/drivers_keyboard/keyboard_event_apple.h"
 #include "../../frontend/frontend.h"
+#include "../../configuration.h"
+#include "../../paths.h"
+#include "../../core.h"
 #include "../../retroarch.h"
-#include "../../runloop.h"
-#include "../../system.h"
 #include "../../tasks/tasks_internal.h"
 
 id apple_platform;
 
-#ifdef OSX_PPC
+#if (defined(__MACH__) && (defined(__ppc__) || defined(__ppc64__)))
 @interface RetroArch_OSX : NSObject
 #else
 @interface RetroArch_OSX : NSObject <NSApplicationDelegate>
@@ -107,9 +109,10 @@ static void app_terminate(void)
         case NSFlagsChanged:
          {
             static uint32_t old_flags = 0;
-            uint32_t new_flags = event.modifierFlags;
-            bool down = (new_flags & old_flags) == old_flags;
-            old_flags = new_flags;
+            uint32_t new_flags        = event.modifierFlags;
+            bool down                 = (new_flags & old_flags) == old_flags;
+
+            old_flags                 = new_flags;
 
             apple_input_keyboard_event(down, event.keyCode,
                   0, event.modifierFlags, RETRO_DEVICE_KEYBOARD);
@@ -146,20 +149,27 @@ static void app_terminate(void)
         case NSLeftMouseDown:
         case NSRightMouseDown:
         case NSOtherMouseDown:
-         apple = (cocoa_input_data_t*)input_driver_get_data();
-         if (!apple)
-            return;
-         apple->mouse_buttons |= 1 << event.buttonNumber;
-         apple->touch_count = 1;
+         {
+            NSPoint pos = [[CocoaView get] convertPoint:[event locationInWindow] fromView:nil];
+            apple = (cocoa_input_data_t*)input_driver_get_data();
+            if (!apple || pos.y < 0)
+               return;
+            apple->mouse_buttons |= 1 << event.buttonNumber;
+
+            apple->touch_count = 1;
+         }
          break;
       case NSLeftMouseUp:
       case NSRightMouseUp:
       case NSOtherMouseUp:
-         apple = (cocoa_input_data_t*)input_driver_get_data();
-         if (!apple)
-            return;
-         apple->mouse_buttons &= ~(1 << event.buttonNumber);
-         apple->touch_count = 0;
+         {
+            NSPoint pos = [[CocoaView get] convertPoint:[event locationInWindow] fromView:nil];
+            apple = (cocoa_input_data_t*)input_driver_get_data();
+            if (!apple || pos.y < 0)
+               return;
+            apple->mouse_buttons &= ~(1 << event.buttonNumber);
+            apple->touch_count = 0;
+         }
          break;
    }
 }
@@ -220,9 +230,9 @@ static char** waiting_argv;
 
 - (void) rarch_main
 {
-    int ret = 0;
-    while (ret != -1)
+    do
     {
+       int ret;
        unsigned sleep_ms = 0;
        const ui_application_t *application = ui_companion_driver_get_application_ptr();
        if (application)
@@ -230,9 +240,11 @@ static char** waiting_argv;
        ret = runloop_iterate(&sleep_ms);
        if (ret == 1 && sleep_ms > 0)
           retro_sleep(sleep_ms);
-       task_queue_ctl(TASK_QUEUE_CTL_CHECK, NULL);
+       task_queue_check();
        while(CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, FALSE) == kCFRunLoopRunHandledSource);
-    }
+       if (ret == -1)
+          break;
+    }while(1);
     
     main_exit(NULL);
 }
@@ -267,28 +279,25 @@ static char** waiting_argv;
 {
    if (filenames.count == 1 && [filenames objectAtIndex:0])
    {
-      struct retro_system_info         *system = NULL;
-      NSString *__core = [filenames objectAtIndex:0];
-      const char *core_name = NULL;
+      rarch_system_info_t *info        = runloop_get_system_info();
+      struct retro_system_info *system = &info->info;
+      NSString *__core                 = [filenames objectAtIndex:0];
+      const char *core_name            = NULL;
 
-      menu_driver_ctl(RARCH_MENU_CTL_SYSTEM_INFO_GET, &system);
-      
       if (system)
          core_name = system->library_name;
 		
       if (core_name)
       {
          content_ctx_info_t content_info = {0};
-         task_push_content_load_default(
-               NULL,
+         task_push_load_content_with_current_core_from_companion_ui(
                __core.UTF8String,
                &content_info,
                CORE_TYPE_PLAIN,
-               CONTENT_MODE_LOAD_CONTENT_WITH_CURRENT_CORE_FROM_COMPANION_UI,
                NULL, NULL);
       }
       else
-         runloop_ctl(RUNLOOP_CTL_SET_CONTENT_PATH, (void*)__core.UTF8String);
+         path_set(RARCH_PATH_CONTENT, __core.UTF8String);
 
       [sender replyToOpenOrPrint:NSApplicationDelegateReplySuccess];
    }
@@ -311,6 +320,7 @@ static char** waiting_argv;
 
 static void open_core_handler(ui_browser_window_state_t *state, bool result)
 {
+   rarch_system_info_t *info      = runloop_get_system_info();
     if (!state)
         return;
     if (string_is_empty(state->result))
@@ -320,19 +330,18 @@ static void open_core_handler(ui_browser_window_state_t *state, bool result)
 
     settings_t *settings = config_get_ptr();
                 
-    runloop_ctl(RUNLOOP_CTL_SET_LIBRETRO_PATH, (void*)state->result);
+    rarch_ctl(RARCH_CTL_SET_LIBRETRO_PATH, (void*)state->result);
     ui_companion_event_command(CMD_EVENT_LOAD_CORE);
                 
-    if (menu_driver_ctl(RARCH_MENU_CTL_HAS_LOAD_NO_CONTENT, NULL)
-                      && settings->set_supports_no_game_enable)
+    if (info && info->load_no_content
+          && settings->bools.set_supports_no_game_enable)
     {
         content_ctx_info_t content_info = {0};
-        runloop_ctl(RUNLOOP_CTL_CLEAR_CONTENT_PATH, NULL);
-        task_push_content_load_default(
-                NULL, NULL,
+        path_clear(RARCH_PATH_CONTENT);
+        task_push_load_content_with_current_core_from_companion_ui(
+                NULL,
                 &content_info,
                 CORE_TYPE_PLAIN,
-                CONTENT_MODE_LOAD_CONTENT_WITH_CURRENT_CORE_FROM_COMPANION_UI,
                 NULL, NULL);
     }
 }
@@ -346,24 +355,22 @@ static void open_document_handler(ui_browser_window_state_t *state, bool result)
     if (!result)
         return;
     
-    struct retro_system_info *system = NULL;
+    rarch_system_info_t *info        = runloop_get_system_info();
+    struct retro_system_info *system = &info->info;
     const char            *core_name = NULL;
-                
-    menu_driver_ctl(RARCH_MENU_CTL_SYSTEM_INFO_GET, &system);
                 
     if (system)
         core_name = system->library_name;
                 
-    runloop_ctl(RUNLOOP_CTL_SET_CONTENT_PATH, (void*)state->result);
+    path_set(RARCH_PATH_CONTENT, state->result);
                 
     if (core_name)
     {
         content_ctx_info_t content_info = {0};
-        task_push_content_load_default(
-                NULL, NULL,
+        task_push_load_content_with_current_core_from_companion_ui(
+                NULL,
                 &content_info,
                 CORE_TYPE_PLAIN,
-                CONTENT_MODE_LOAD_CONTENT_WITH_CURRENT_CORE_FROM_COMPANION_UI,
                 NULL, NULL);
     }
 }
@@ -379,7 +386,7 @@ static void open_document_handler(ui_browser_window_state_t *state, bool result)
         browser_state.filters       = strdup("dylib");
         browser_state.filters_title = strdup("Core");
         browser_state.title         = strdup("Load Core");
-        browser_state.startdir      = strdup(settings->directory.libretro);
+        browser_state.startdir      = strdup(settings->paths.directory_libretro);
         
         bool result = browser->open(&browser_state);
         open_core_handler(&browser_state, result);
@@ -399,7 +406,7 @@ static void open_document_handler(ui_browser_window_state_t *state, bool result)
     {
         ui_browser_window_state_t browser_state = {{0}};
         settings_t *settings  = config_get_ptr();
-        NSString *startdir    = BOXSTRING(settings->directory.menu_content);
+        NSString *startdir    = BOXSTRING(settings->paths.directory_menu_content);
         
         if (!startdir.length)
             startdir           = BOXSTRING("/");
@@ -422,7 +429,7 @@ static void open_document_handler(ui_browser_window_state_t *state, bool result)
 - (IBAction)showCoresDirectory:(id)sender
 {
    settings_t *settings = config_get_ptr();
-   [[NSWorkspace sharedWorkspace] openFile:BOXSTRING(settings->directory.libretro)];
+   [[NSWorkspace sharedWorkspace] openFile:BOXSTRING(settings->paths.directory_libretro)];
 }
 
 - (IBAction)showPreferences:(id)sender
@@ -474,7 +481,7 @@ static void open_document_handler(ui_browser_window_state_t *state, bool result)
    if (sender_tag >= 10 && sender_tag <= 19)
    {
       unsigned idx = (sender_tag - (10-1));
-      runloop_ctl(RUNLOOP_CTL_SET_WINDOWED_SCALE, &idx);
+      rarch_ctl(RARCH_CTL_SET_WINDOWED_SCALE, &idx);
       cmd = CMD_EVENT_RESIZE_WINDOWED_SCALE;
    }
 

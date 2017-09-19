@@ -1,6 +1,6 @@
 /* RetroArch - A frontend for libretro.
  * Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- * Copyright (C) 2011-2016 - Daniel De Matteis
+ * Copyright (C) 2011-2017 - Daniel De Matteis
  *
  * RetroArch is free software: you can redistribute it and/or modify it under the terms
  * of the GNU General Public License as published by the Free Software Found-
@@ -18,11 +18,19 @@
 #include <stddef.h>
 #include <string.h>
 
-#ifdef VITA
-#include <psp2/moduleinfo.h>
-#include <psp2/power.h>
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
 
-int scePowerSetArmClockFrequency(int freq);
+#ifdef VITA
+#include <psp2/power.h>
+#include <psp2/sysmodule.h>
+#include <psp2/appmgr.h>
+#include <pthread.h>
+
+#include "../../bootstrap/vita/sbrk.c"
+#include "../../bootstrap/vita/threading.c"
+
 #else
 #include <pspkernel.h>
 #include <pspdebug.h>
@@ -31,16 +39,23 @@ int scePowerSetArmClockFrequency(int freq);
 #include <pspsdk.h>
 #endif
 
+#include <string/stdstring.h>
 #include <boolean.h>
 #include <file/file_path.h>
 #ifndef IS_SALAMANDER
 #include <lists/file_list.h>
 #endif
 
+#ifdef HAVE_MENU
+#include "../../menu/menu_driver.h"
+#endif
+
 #include "../frontend_driver.h"
 #include "../../defaults.h"
 #include "../../file_path_special.h"
 #include "../../defines/psp_defines.h"
+#include "../../retroarch.h"
+#include "../../paths.h"
 #include "../../verbosity.h"
 
 #if defined(HAVE_KERNEL_PRX) || defined(IS_SALAMANDER)
@@ -49,10 +64,7 @@ int scePowerSetArmClockFrequency(int freq);
 #endif
 #endif
 
-#ifdef VITA
-PSP2_MODULE_INFO(0, 0, "RetroArch");
-int _newlib_heap_size_user = 64 * 1024 * 1024;
-#else
+#ifndef VITA
 PSP_MODULE_INFO("RetroArch", 0, 1, 1);
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER|THREAD_ATTR_VFPU);
 #ifdef BIG_STACK
@@ -62,12 +74,14 @@ PSP_HEAP_SIZE_MAX();
 #endif
 
 char eboot_path[512];
+char user_path[512];
 
 static enum frontend_fork psp_fork_mode = FRONTEND_FORK_NONE;
 
 static void frontend_psp_get_environment_settings(int *argc, char *argv[],
       void *args, void *params_data)
 {
+   unsigned i;
    struct rarch_main_wrap *params = NULL;
 
    (void)args;
@@ -77,61 +91,113 @@ static void frontend_psp_get_environment_settings(int *argc, char *argv[],
    logger_init();
 #elif defined(HAVE_FILE_LOGGER)
 #ifndef VITA
-   retro_main_log_file_init("ms0:/retroarch-log.txt");
+   retro_main_log_file_init("ms0:/temp/retroarch-log.txt");
+#else
+   retro_main_log_file_init("ux0:/temp/retroarch-log.txt");
 #endif
 #endif
 #endif
 
 #ifdef VITA
-   strlcpy(eboot_path, "cache0:/retroarch/", sizeof(eboot_path));
-   strlcpy(g_defaults.dir.port, eboot_path, sizeof(g_defaults.dir.port));
+   strlcpy(eboot_path, "app0:/", sizeof(eboot_path));
+   strlcpy(g_defaults.dirs[DEFAULT_DIR_PORT], eboot_path, sizeof(g_defaults.dirs[DEFAULT_DIR_PORT]));
+   strlcpy(user_path, "ux0:/data/retroarch/", sizeof(user_path));
 #else
    strlcpy(eboot_path, argv[0], sizeof(eboot_path));
-   fill_pathname_basedir(g_defaults.dir.port, argv[0], sizeof(g_defaults.dir.port));
+   /* for PSP, use uppercase directories, and no trailing slashes
+      otherwise mkdir fails */
+   strlcpy(user_path, "ms0:/PSP/RETROARCH", sizeof(user_path));
+   fill_pathname_basedir(g_defaults.dirs[DEFAULT_DIR_PORT], argv[0], sizeof(g_defaults.dirs[DEFAULT_DIR_PORT]));
 #endif
-   RARCH_LOG("port dir: [%s]\n", g_defaults.dir.port);
+   RARCH_LOG("port dir: [%s]\n", g_defaults.dirs[DEFAULT_DIR_PORT]);
 
-   fill_pathname_join(g_defaults.dir.core_assets, g_defaults.dir.port,
-         "downloads", sizeof(g_defaults.dir.core_assets));
-   fill_pathname_join(g_defaults.dir.assets, g_defaults.dir.port,
-         "media", sizeof(g_defaults.dir.assets));
-   fill_pathname_join(g_defaults.dir.core, g_defaults.dir.port,
-         "cores", sizeof(g_defaults.dir.core));
-   fill_pathname_join(g_defaults.dir.core_info, g_defaults.dir.port,
-         "cores", sizeof(g_defaults.dir.core_info));
-   fill_pathname_join(g_defaults.dir.savestate, g_defaults.dir.core,
-         "savestates", sizeof(g_defaults.dir.savestate));
-   fill_pathname_join(g_defaults.dir.sram, g_defaults.dir.core,
-         "savefiles", sizeof(g_defaults.dir.sram));
-   fill_pathname_join(g_defaults.dir.system, g_defaults.dir.core,
-         "system", sizeof(g_defaults.dir.system));
-   fill_pathname_join(g_defaults.dir.playlist, g_defaults.dir.core,
-         "playlists", sizeof(g_defaults.dir.playlist));
-   fill_pathname_join(g_defaults.path.config, g_defaults.dir.port,
+#ifdef VITA
+   /* bundle data*/
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_CORE], g_defaults.dirs[DEFAULT_DIR_PORT],
+         "", sizeof(g_defaults.dirs[DEFAULT_DIR_CORE]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_ASSETS], g_defaults.dirs[DEFAULT_DIR_PORT],
+         "assets", sizeof(g_defaults.dirs[DEFAULT_DIR_ASSETS]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_CORE_INFO], g_defaults.dirs[DEFAULT_DIR_CORE],
+         "info", sizeof(g_defaults.dirs[DEFAULT_DIR_CORE_INFO]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_DATABASE], g_defaults.dirs[DEFAULT_DIR_PORT],
+         "database/rdb", sizeof(g_defaults.dirs[DEFAULT_DIR_DATABASE]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_CURSOR], g_defaults.dirs[DEFAULT_DIR_PORT],
+         "database/cursors", sizeof(g_defaults.dirs[DEFAULT_DIR_CURSOR]));
+   /* user data*/
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_CHEATS], user_path,
+         "cheats", sizeof(g_defaults.dirs[DEFAULT_DIR_CHEATS]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_MENU_CONFIG], user_path,
+         "config", sizeof(g_defaults.dirs[DEFAULT_DIR_MENU_CONFIG]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_CORE_ASSETS], user_path,
+         "downloads", sizeof(g_defaults.dirs[DEFAULT_DIR_CORE_ASSETS]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_PLAYLIST], user_path,
+         "playlists", sizeof(g_defaults.dirs[DEFAULT_DIR_PLAYLIST]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_REMAP], user_path,
+         "remaps", sizeof(g_defaults.dirs[DEFAULT_DIR_REMAP]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_SRAM], user_path,
+         "savefiles", sizeof(g_defaults.dirs[DEFAULT_DIR_SRAM]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_SAVESTATE], user_path,
+         "savestates", sizeof(g_defaults.dirs[DEFAULT_DIR_SAVESTATE]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_SYSTEM], user_path,
+         "system", sizeof(g_defaults.dirs[DEFAULT_DIR_SYSTEM]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_CACHE], user_path,
+         "temp", sizeof(g_defaults.dirs[DEFAULT_DIR_CACHE]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_OVERLAY], user_path,
+         "overlays", sizeof(g_defaults.dirs[DEFAULT_DIR_OVERLAY]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_THUMBNAILS], user_path,
+         "thumbnails", sizeof(g_defaults.dirs[DEFAULT_DIR_THUMBNAILS]));
+   strlcpy(g_defaults.dirs[DEFAULT_DIR_CONTENT_HISTORY],
+         user_path, sizeof(g_defaults.dirs[DEFAULT_DIR_CONTENT_HISTORY]));
+   fill_pathname_join(g_defaults.path.config, user_path,
          file_path_str(FILE_PATH_MAIN_CONFIG), sizeof(g_defaults.path.config));
-   fill_pathname_join(g_defaults.dir.cheats, g_defaults.dir.port,
-         "cheats", sizeof(g_defaults.dir.cheats));
-   fill_pathname_join(g_defaults.dir.remap, g_defaults.dir.port,
-         "remaps", sizeof(g_defaults.dir.remap));
+#else
 
-#ifdef VITA
-   fill_pathname_join(g_defaults.dir.overlay, g_defaults.dir.core,
-         "overlays", sizeof(g_defaults.dir.overlay));
-#endif
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_CORE], g_defaults.dirs[DEFAULT_DIR_PORT],
+         "CORES", sizeof(g_defaults.dirs[DEFAULT_DIR_CORE]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_CORE_INFO], g_defaults.dirs[DEFAULT_DIR_PORT],
+         "INFO", sizeof(g_defaults.dirs[DEFAULT_DIR_CORE_INFO]));
 
-#ifdef VITA
-   params = (struct rarch_main_wrap*)params_data;
-   params->verbose = true;
+   /* user data */
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_CHEATS], user_path,
+         "CHEATS", sizeof(g_defaults.dirs[DEFAULT_DIR_CHEATS]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_MENU_CONFIG], user_path,
+         "CONFIG", sizeof(g_defaults.dirs[DEFAULT_DIR_MENU_CONFIG]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_CORE_ASSETS], user_path,
+         "DOWNLOADS", sizeof(g_defaults.dirs[DEFAULT_DIR_CORE_ASSETS]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_PLAYLIST], user_path,
+         "PLAYLISTS", sizeof(g_defaults.dirs[DEFAULT_DIR_PLAYLIST]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_REMAP], g_defaults.dirs[DEFAULT_DIR_MENU_CONFIG],
+         "REMAPS", sizeof(g_defaults.dirs[DEFAULT_DIR_REMAP]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_SRAM], user_path,
+         "SAVEFILES", sizeof(g_defaults.dirs[DEFAULT_DIR_SRAM]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_SAVESTATE], user_path,
+         "SAVESTATES", sizeof(g_defaults.dirs[DEFAULT_DIR_SAVESTATE]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_SCREENSHOT], user_path,
+         "SCREENSHOTS", sizeof(g_defaults.dirs[DEFAULT_DIR_SCREENSHOT]));
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_SYSTEM], user_path,
+         "SYSTEM", sizeof(g_defaults.dirs[DEFAULT_DIR_SYSTEM]));
+
+   /* cache dir */
+   fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_CACHE], user_path,
+         "TEMP", sizeof(g_defaults.dirs[DEFAULT_DIR_CACHE]));
+
+   /* history and main config */
+   strlcpy(g_defaults.dirs[DEFAULT_DIR_CONTENT_HISTORY],
+         user_path, sizeof(g_defaults.dirs[DEFAULT_DIR_CONTENT_HISTORY]));
+   fill_pathname_join(g_defaults.path.config, user_path,
+         file_path_str(FILE_PATH_MAIN_CONFIG), sizeof(g_defaults.path.config));
 #endif
 
 #ifndef IS_SALAMANDER
+#ifdef VITA
+   params          = (struct rarch_main_wrap*)params_data;
+   params->verbose = true;
+#endif
    if (!string_is_empty(argv[1]))
    {
-      static char path[PATH_MAX_LENGTH];
-      struct rarch_main_wrap *args = NULL;
-
-      *path = '\0';
-      args = (struct rarch_main_wrap*)params_data;
+      static char path[PATH_MAX_LENGTH] = {0};
+      struct rarch_main_wrap      *args =
+         (struct rarch_main_wrap*)params_data;
 
       if (args)
       {
@@ -154,6 +220,13 @@ static void frontend_psp_get_environment_settings(int *argc, char *argv[],
       }
    }
 #endif
+
+   for (i = 0; i < DEFAULT_DIR_LAST; i++)
+   {
+      const char *dir_path = g_defaults.dirs[i];
+      if (!string_is_empty(dir_path))
+         path_mkdir(dir_path);
+   }
 }
 
 static void frontend_psp_deinit(void *data)
@@ -172,6 +245,7 @@ static void frontend_psp_shutdown(bool unused)
 {
    (void)unused;
 #ifdef VITA
+   //sceKernelExitProcess(0);
    return;
 #else
    sceKernelExitGame();
@@ -210,13 +284,13 @@ static int setup_callback(void)
 static void frontend_psp_init(void *data)
 {
 #ifndef IS_SALAMANDER
-#ifndef VITA
+
+#ifdef VITA
+   scePowerSetArmClockFrequency(444);
+   sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
+   pthread_init();
+#else
    (void)data;
-
-   /* TODO/FIXME - Err on the safe side for now and
-    * assume these aren't there with the PSP2/Vita SDKs.
-    */
-
    /* initialize debug screen */
    pspDebugScreenInit();
    pspDebugScreenClear();
@@ -225,9 +299,8 @@ static void frontend_psp_init(void *data)
 
    pspFpuSetEnable(0); /* disable FPU exceptions */
    scePowerSetClockFrequency(333,333,166);
-#else
-   scePowerSetArmClockFrequency(444);
 #endif
+
 #endif
 
 #if defined(HAVE_KERNEL_PRX) || defined(IS_SALAMANDER)
@@ -239,31 +312,32 @@ static void frontend_psp_init(void *data)
 
 static void frontend_psp_exec(const char *path, bool should_load_game)
 {
-#if defined(HAVE_KERNEL_PRX) || defined(IS_SALAMANDER)
+#if defined(HAVE_KERNEL_PRX) || defined(IS_SALAMANDER) || defined(VITA)
    char argp[512] = {0};
    SceSize   args = 0;
 
-   argp[0] = '\0';
+#if !defined(VITA)
    strlcpy(argp, eboot_path, sizeof(argp));
    args = strlen(argp) + 1;
+#endif
 
 #ifndef IS_SALAMANDER
-   char *fullpath = NULL;
-
-   runloop_ctl(RUNLOOP_CTL_GET_CONTENT_PATH, &fullpath);
-
-   if (should_load_game && !string_is_empty(fullpath))
+   if (should_load_game && !path_is_empty(RARCH_PATH_CONTENT))
    {
       argp[args] = '\0';
-      strlcat(argp + args, fullpath, sizeof(argp) - args);
+      strlcat(argp + args, path_get(RARCH_PATH_CONTENT), sizeof(argp) - args);
       args += strlen(argp + args) + 1;
    }
 #endif
 
    RARCH_LOG("Attempt to load executable: [%s].\n", path);
-
+#if defined(VITA)
+   RARCH_LOG("Attempt to load executable: %d [%s].\n", args, argp);
+   int ret =  sceAppMgrLoadExec(path, args==0? NULL : (char * const*)((const char*[]){argp, 0}), NULL);
+   RARCH_LOG("Attempt to load executable: [%d].\n", ret);
+#else
    exitspawn_kernel(path, args, argp);
-
+#endif
 #endif
 }
 
@@ -364,21 +438,51 @@ enum frontend_architecture frontend_psp_get_architecture(void)
 #endif
 }
 
-static int frontend_psp_parse_drive_list(void *data)
+static int frontend_psp_parse_drive_list(void *data, bool load_content)
 {
 #ifndef IS_SALAMANDER
    file_list_t *list = (file_list_t*)data;
+   enum msg_hash_enums enum_idx = load_content ?
+      MENU_ENUM_LABEL_FILE_DETECT_CORE_LIST_PUSH_DIR :
+      MSG_UNKNOWN;
 
 #ifdef VITA
-   menu_entries_add_enum(list,
-         "cache0:/", "", MSG_UNKNOWN, FILE_TYPE_DIRECTORY, 0, 0);
+   menu_entries_append_enum(list,
+         "app0:/",
+         msg_hash_to_str(MENU_ENUM_LABEL_FILE_DETECT_CORE_LIST_PUSH_DIR),
+         enum_idx,
+         FILE_TYPE_DIRECTORY, 0, 0);
+   menu_entries_append_enum(list,
+         "ur0:/",
+         msg_hash_to_str(MENU_ENUM_LABEL_FILE_DETECT_CORE_LIST_PUSH_DIR),
+         enum_idx,
+         FILE_TYPE_DIRECTORY, 0, 0);
+   menu_entries_append_enum(list,
+         "ux0:/",
+         msg_hash_to_str(MENU_ENUM_LABEL_FILE_DETECT_CORE_LIST_PUSH_DIR),
+         enum_idx,
+         FILE_TYPE_DIRECTORY, 0, 0);
+   menu_entries_append_enum(list,
+         "uma0:/",
+         msg_hash_to_str(MENU_ENUM_LABEL_FILE_DETECT_CORE_LIST_PUSH_DIR),
+         enum_idx,
+         FILE_TYPE_DIRECTORY, 0, 0);
 #else
-   menu_entries_add_enum(list,
-         "ms0:/", "", MSG_UNKNOWN, FILE_TYPE_DIRECTORY, 0, 0);
-   menu_entries_add_enum(list,
-         "ef0:/", "", MSG_UNKNOWN, FILE_TYPE_DIRECTORY, 0, 0);
-   menu_entries_add_enum(list,
-         "host0:/", "", MSG_UNKNOWN, FILE_TYPE_DIRECTORY, 0, 0);
+   menu_entries_append_enum(list,
+         "ms0:/",
+         msg_hash_to_str(MENU_ENUM_LABEL_FILE_DETECT_CORE_LIST_PUSH_DIR),
+         enum_idx,
+         FILE_TYPE_DIRECTORY, 0, 0);
+   menu_entries_append_enum(list,
+         "ef0:/",
+         msg_hash_to_str(MENU_ENUM_LABEL_FILE_DETECT_CORE_LIST_PUSH_DIR),
+         enum_idx,
+         FILE_TYPE_DIRECTORY, 0, 0);
+   menu_entries_append_enum(list,
+         "host0:/",
+         msg_hash_to_str(MENU_ENUM_LABEL_FILE_DETECT_CORE_LIST_PUSH_DIR),
+         enum_idx,
+         FILE_TYPE_DIRECTORY, 0, 0);
 #endif
 #endif
 
@@ -407,6 +511,12 @@ frontend_ctx_driver_t frontend_ctx_psp = {
    frontend_psp_parse_drive_list,
    NULL,                         /* get_mem_total */
    NULL,                         /* get_mem_free */
+   NULL,                         /* install_signal_handler */
+   NULL,                         /* get_sighandler_state */
+   NULL,                         /* set_sighandler_state */
+   NULL,                         /* destroy_sighandler_state */
+   NULL,                         /* attach_console */
+   NULL,                         /* detach_console */
 #ifdef VITA
    "vita",
 #else

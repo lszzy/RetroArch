@@ -1,5 +1,5 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -24,43 +24,72 @@
 #include "playlist.h"
 #endif
 
+enum default_dirs
+{
+   DEFAULT_DIR_MENU_CONTENT = 0,
+   DEFAULT_DIR_CORE_ASSETS,
+   DEFAULT_DIR_MENU_CONFIG,
+   DEFAULT_DIR_AUTOCONFIG,
+   DEFAULT_DIR_AUDIO_FILTER,
+   DEFAULT_DIR_VIDEO_FILTER,
+   DEFAULT_DIR_ASSETS,
+   DEFAULT_DIR_CORE,
+   DEFAULT_DIR_CORE_INFO,
+   DEFAULT_DIR_OVERLAY,
+   DEFAULT_DIR_PORT,
+   DEFAULT_DIR_SHADER,
+   DEFAULT_DIR_SAVESTATE,
+   DEFAULT_DIR_RESAMPLER,
+   DEFAULT_DIR_SRAM,
+   DEFAULT_DIR_SCREENSHOT,
+   DEFAULT_DIR_SYSTEM,
+   DEFAULT_DIR_PLAYLIST,
+   DEFAULT_DIR_CONTENT_HISTORY,
+   DEFAULT_DIR_REMAP,
+   DEFAULT_DIR_CACHE,
+   DEFAULT_DIR_WALLPAPERS,
+   DEFAULT_DIR_THUMBNAILS,
+   DEFAULT_DIR_DATABASE,
+   DEFAULT_DIR_CURSOR,
+   DEFAULT_DIR_CHEATS,
+   DEFAULT_DIR_RECORD_CONFIG,
+   DEFAULT_DIR_RECORD_OUTPUT,
+   DEFAULT_DIR_LAST
+};
+
 struct defaults
 {
+#ifdef HAVE_MENU
    struct
    {
-      char core_assets[PATH_MAX_LENGTH];
-      char menu_config[PATH_MAX_LENGTH];
-      char autoconfig[PATH_MAX_LENGTH];
-      char audio_filter[PATH_MAX_LENGTH];
-      char video_filter[PATH_MAX_LENGTH];
-      char assets[PATH_MAX_LENGTH];
-      char core[PATH_MAX_LENGTH];
-      char core_info[PATH_MAX_LENGTH];
-      char overlay[PATH_MAX_LENGTH];
-      char osk_overlay[PATH_MAX_LENGTH];
-      char port[PATH_MAX_LENGTH];
-      char shader[PATH_MAX_LENGTH];
-      char savestate[PATH_MAX_LENGTH];
-      char resampler[PATH_MAX_LENGTH];
-      char sram[PATH_MAX_LENGTH];
-      char screenshot[PATH_MAX_LENGTH];
-      char system[PATH_MAX_LENGTH];
-      char playlist[PATH_MAX_LENGTH];
-      char content_history[PATH_MAX_LENGTH];
-      char remap[PATH_MAX_LENGTH];
-      char cache[PATH_MAX_LENGTH];
-      char wallpapers[PATH_MAX_LENGTH];
-      char thumbnails[PATH_MAX_LENGTH];
-      char database[PATH_MAX_LENGTH];
-      char cursor[PATH_MAX_LENGTH];
-      char cheats[PATH_MAX_LENGTH];
-   } dir;
+      struct
+      {
+         bool menu_color_theme_enable;
+         unsigned menu_color_theme;
+      } materialui;
+
+      struct
+      {
+         bool set;
+         unsigned menu_btn_ok;
+         unsigned menu_btn_cancel;
+      } controls;
+   } menu;
+#endif
+
+   struct
+   {
+      bool set;
+      bool enable;
+   } overlay;
+
+   char dirs [DEFAULT_DIR_LAST + 1][PATH_MAX_LENGTH];
 
    struct
    {
       char config[PATH_MAX_LENGTH];
       char core[PATH_MAX_LENGTH];
-      char buildbot_server_url[PATH_MAX_LENGTH];
+      char buildbot_server_url[255];
    } path;
 
    struct
@@ -68,11 +97,19 @@ struct defaults
       int out_latency;
       float video_refresh_rate;
       bool video_threaded_enable;
-      char menu[PATH_MAX_LENGTH];
+      char menu[32];
    } settings; 
 
 #ifndef IS_SALAMANDER
-   playlist_t *history;
+   playlist_t *content_history;
+   playlist_t *content_favorites;
+#ifdef HAVE_IMAGEVIEWER
+   playlist_t *image_history;
+#endif
+   playlist_t *music_history;
+#ifdef HAVE_FFMPEG
+   playlist_t *video_history;
+#endif
 #endif
 };
 

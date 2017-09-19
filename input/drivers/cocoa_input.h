@@ -1,5 +1,5 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *  Copyright (C) 2013-2014 - Jason Fetters
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
@@ -19,7 +19,6 @@
 
 #include <stdint.h>
 #include <boolean.h>
-#include "../../general.h"
 
 /* Input responder */
 #define MAX_TOUCHES  16
@@ -46,6 +45,8 @@ typedef struct
    int16_t mouse_rel_y;
    int16_t mouse_wu;
    int16_t mouse_wd;
+   int16_t mouse_wl;
+   int16_t mouse_wr;
 
    const input_device_driver_t *sec_joypad;
    const input_device_driver_t *joypad;

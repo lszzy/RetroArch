@@ -1,6 +1,6 @@
 /* RetroArch - A frontend for libretro.
  * Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- * Copyright (C) 2011-2016 - Daniel De Matteis
+ * Copyright (C) 2011-2017 - Daniel De Matteis
  * Copyright (C) 2012-2015 - Michael Lelli
  *
  * RetroArch is free software: you can redistribute it and/or modify it under the terms
@@ -18,16 +18,27 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#ifdef HAVE_CONFIG_H
+#include "../config.h"
+#endif
+
+#include <retro_timers.h>
+
+#ifdef HAVE_MENU
+#include "../menu/menu_driver.h"
+#endif
+
 #include "frontend.h"
+#include "../configuration.h"
 #include "../ui/ui_companion_driver.h"
 #include "../tasks/tasks_internal.h"
 
 #include "../driver.h"
+#include "../paths.h"
 #include "../retroarch.h"
-#include "../runloop.h"
 
-#ifdef HAVE_MENU
-#include "../menu/menu_driver.h"
+#ifndef HAVE_MAIN
+#include "../retroarch.h"
 #endif
 
 /**
@@ -40,9 +51,10 @@
  **/
 void main_exit(void *args)
 {
-   settings_t *settings                  = config_get_ptr();
+   settings_t *settings = config_get_ptr();
 
-   command_event(CMD_EVENT_MENU_SAVE_CURRENT_CONFIG, NULL);
+   if (settings->bools.config_save_on_exit)
+      command_event(CMD_EVENT_MENU_SAVE_CURRENT_CONFIG, NULL);
 
 #ifdef HAVE_MENU
    /* Do not want menu context to live any more. */
@@ -57,8 +69,9 @@ void main_exit(void *args)
 #endif
 
    frontend_driver_deinit(args);
-   frontend_driver_exitspawn(settings->path.libretro,
-         sizeof(settings->path.libretro));
+   frontend_driver_exitspawn(
+         path_get_ptr(RARCH_PATH_CORE),
+         path_get_realsize(RARCH_PATH_CORE));
 
    rarch_ctl(RARCH_CTL_DESTROY, NULL);
 
@@ -85,9 +98,6 @@ void main_exit(void *args)
 int rarch_main(int argc, char *argv[], void *data)
 {
    void *args                      = (void*)data;
-#ifndef HAVE_MAIN
-   int ret                         = 0;
-#endif
 
    rarch_ctl(RARCH_CTL_PREINIT, NULL);
    frontend_driver_init_first(args);
@@ -102,15 +112,14 @@ int rarch_main(int argc, char *argv[], void *data)
       info.args            = args;
       info.environ_get     = frontend_driver_environment_get_ptr();
 
-      if (!task_push_content_load_default(
+      if (!task_push_load_content_from_cli(
                NULL,
                NULL,
                &info,
                CORE_TYPE_PLAIN,
-               CONTENT_MODE_LOAD_FROM_CLI,
                NULL,
                NULL))
-         return 0;
+         return 1;
    }
 
    ui_companion_driver_init_first();
@@ -119,12 +128,16 @@ int rarch_main(int argc, char *argv[], void *data)
    do
    {
       unsigned sleep_ms = 0;
-      ret = runloop_iterate(&sleep_ms);
+      int           ret = runloop_iterate(&sleep_ms);
 
       if (ret == 1 && sleep_ms > 0)
          retro_sleep(sleep_ms);
-      task_queue_ctl(TASK_QUEUE_CTL_CHECK, NULL);
-   }while(ret != -1);
+
+      task_queue_check();
+
+      if (ret == -1)
+         break;
+   }while(1);
 
    main_exit(args);
 #endif

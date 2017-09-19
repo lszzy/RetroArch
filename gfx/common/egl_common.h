@@ -1,5 +1,5 @@
 /*  RetroArch - A frontend for libretro.
- *  Copyright (c) 2011-2016 - Daniel De Matteis
+ *  Copyright (c) 2011-2017 - Daniel De Matteis
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -16,8 +16,6 @@
 #ifndef __EGL_COMMON_H
 #define __EGL_COMMON_H
 
-#include <signal.h>
-
 #ifdef HAVE_GBM
 /* presense or absense of this include makes egl.h change NativeWindowType between gbm_device* and _XDisplay* */
 #include <gbm.h>
@@ -28,7 +26,15 @@
 #include <boolean.h>
 #include <retro_common_api.h>
 
-#include "../video_context_driver.h"
+#include "../video_driver.h"
+
+#ifndef EGL_CONTEXT_FLAGS_KHR
+#define EGL_CONTEXT_FLAGS_KHR 0x30FC
+#endif
+
+#ifndef EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR
+#define EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR 0x00000001
+#endif
 
 RETRO_BEGIN_DECLS
 
@@ -61,7 +67,6 @@ typedef struct
    bool use_hw_ctx;
 } egl_ctx_data_t;
 
-extern volatile sig_atomic_t g_egl_quit;
 extern bool g_egl_inited;
 
 /* bind_api is called before init so we need these, please
@@ -83,9 +88,8 @@ void egl_set_swap_interval(egl_ctx_data_t *egl, unsigned interval);
 
 void egl_get_video_size(egl_ctx_data_t *egl, unsigned *width, unsigned *height);
 
-void egl_install_sighandlers(void);
-
 bool egl_init_context(egl_ctx_data_t *egl,
+      EGLenum platform,
       void *display_data,
       EGLint *major,
       EGLint *minor,

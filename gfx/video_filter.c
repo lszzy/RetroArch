@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -17,14 +17,19 @@
 #include <stdlib.h>
 
 #include <file/file_path.h>
+#include <file/config_file_userdata.h>
 #include <lists/dir_list.h>
 #include <dynamic/dylib.h>
 #include <features/features_cpu.h>
+#include <string/stdstring.h>
+#include <retro_miscellaneous.h>
+
+#ifdef HAVE_CONFIG_H
+#include "../config.h"
+#endif
 
 #include "../frontend/frontend_driver.h"
-#include "../config_file_userdata.h"
 #include "../dynamic.h"
-#include "../general.h"
 #include "../performance_counters.h"
 #include "../verbosity.h"
 #include "video_filter.h"
@@ -107,7 +112,7 @@ softfilter_find_implementation(rarch_softfilter_t *filt, const char *ident)
 
    for (i = 0; i < filt->num_plugs; i++)
    {
-      if (!strcmp(filt->plugs[i].impl->short_ident, ident))
+      if (string_is_equal(filt->plugs[i].impl->short_ident, ident))
          return filt->plugs[i].impl;
    }
 
@@ -131,10 +136,11 @@ static bool create_softfilter_graph(rarch_softfilter_t *filt,
 {
    unsigned input_fmts, input_fmt, output_fmts, i = 0;
    struct config_file_userdata userdata;
-   char key[64]  = {0};
-   char name[64] = {0};
+   char key[64], name[64];
 
    (void)i;
+
+   key[0] = name[0] = '\0';
 
    snprintf(key, sizeof(key), "filter");
 
@@ -345,7 +351,7 @@ static bool append_softfilter_plugs(rarch_softfilter_t *filt,
       struct string_list *list)
 {
    unsigned i;
-   softfilter_simd_mask_t mask = cpu_features_get();
+   softfilter_simd_mask_t mask = (softfilter_simd_mask_t)cpu_features_get();
 
    (void)list;
 
@@ -382,7 +388,7 @@ rarch_softfilter_t *rarch_softfilter_new(const char *filter_config,
       enum retro_pixel_format in_pixel_format,
       unsigned max_width, unsigned max_height)
 {
-   softfilter_simd_mask_t cpu_features = cpu_features_get();
+   softfilter_simd_mask_t cpu_features = (softfilter_simd_mask_t)cpu_features_get();
    char basedir[PATH_MAX_LENGTH];
 #ifdef HAVE_DYLIB
    char ext_name[PATH_MAX_LENGTH];
@@ -409,7 +415,7 @@ rarch_softfilter_t *rarch_softfilter_new(const char *filter_config,
    if (!frontend_driver_get_core_extension(ext_name, sizeof(ext_name)))
          goto error;
 
-   plugs = dir_list_new(basedir, ext_name, false, false);
+   plugs = dir_list_new(basedir, ext_name, false, false, false, false);
 
    if (!plugs)
    {
@@ -507,11 +513,15 @@ enum retro_pixel_format rarch_softfilter_get_output_format(
 
 void rarch_softfilter_process(rarch_softfilter_t *filt,
       void *output, size_t output_stride,
-      const void *input, unsigned width, unsigned height, size_t input_stride)
+      const void *input, unsigned width, unsigned height,
+      size_t input_stride)
 {
    unsigned i;
 
-   if (filt && filt->impl && filt->impl->get_work_packets)
+   if (!filt)
+      return;
+
+   if (filt->impl && filt->impl->get_work_packets)
       filt->impl->get_work_packets(filt->impl_data, filt->packets,
             output, output_stride, input, width, height, input_stride);
    

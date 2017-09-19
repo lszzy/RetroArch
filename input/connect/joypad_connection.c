@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2013-2014 - Jason Fetters
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -19,7 +19,7 @@
 
 #include <string/stdstring.h>
 
-#include "../input_config.h"
+#include "../input_driver.h"
 
 #include "joypad_connection.h"
 
@@ -83,6 +83,7 @@ int32_t pad_connection_pad_init(joypad_connection_t *joyconn,
       { "Generic NES USB Controller",  121,   17,     &pad_connection_nesusb },
       { "Wii U GC Controller Adapter", 1406,  823,    &pad_connection_wiiugca },
       { "PS2/PSX Controller Adapter",  2064,  1,      &pad_connection_ps2adapter },
+      { "PSX to PS3 Controller Adapter", 2064, 3,     &pad_connection_psxadapter },
       { 0, 0}
    };
    joypad_connection_t *s = NULL;
@@ -108,13 +109,37 @@ int32_t pad_connection_pad_init(joypad_connection_t *joyconn,
                continue;
          }
 
+#if 0
+         RARCH_LOG("name: %s\n", name);
+         RARCH_LOG("%d VID, PID %d (config)\n", vid, pid);
+         RARCH_LOG("%d VID, PID %d\n", pad_map[i].vid, pad_map[i].pid);
+#endif
+
          if (name_match || (pad_map[i].vid == vid && pad_map[i].pid == pid))
          {
             s->iface      = pad_map[i].iface;
             s->data       = s->iface->init(data, pad, ptr);
             s->connected  = true;
+#if 0
+            RARCH_LOG("%s found \n", pad_map[i].name);
+#endif
             break;
          }
+         else
+         {
+#if 0
+            RARCH_LOG("%s not found \n", pad_map[i].name);
+#endif
+         }
+      }
+
+      /* We failed to find a matching pad, 
+       * set up one without an interface */
+      if (!s->connected)
+      {
+         s->iface = NULL;
+         s->data = data;
+         s->connected = true;
       }
    }
 

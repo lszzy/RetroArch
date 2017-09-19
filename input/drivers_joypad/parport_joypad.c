@@ -1,5 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2014-2015 - Mike Robinson
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -23,9 +24,14 @@
 #include <sys/ioctl.h>
 #include <fcntl.h>
 
-#include "../input_autodetect.h"
-#include "../../general.h"
+#include <compat/strl.h>
+
+#include "../input_driver.h"
+
+#include "../../configuration.h"
 #include "../../verbosity.h"
+
+#include "../../tasks/tasks_internal.h"
 
 /* Linux parport driver does not support reading the control register
    Other platforms may support up to 17 buttons */
@@ -83,8 +89,10 @@ static void parport_poll_pad(struct parport_joypad *pad)
    char data;
    char status;
 
-   ioctl(pad->fd, PPRDATA, &data);
-   ioctl(pad->fd, PPRSTATUS, &status);
+   if (ioctl(pad->fd, PPRDATA, &data) < 0)
+      return;
+   if (ioctl(pad->fd, PPRSTATUS, &status) < 0)
+      return;
 
    for (i = 0; i < 8; i++)
    {
@@ -115,7 +123,6 @@ static bool parport_joypad_init_pad(const char *path, struct parport_joypad *pad
    int datadir          = 1; /* read */
    bool set_control     = false;
    int mode             = IEEE1284_MODE_BYTE;
-   settings_t *settings = config_get_ptr();
 
    if (pad->fd >= 0)
       return false;
@@ -180,7 +187,7 @@ static bool parport_joypad_init_pad(const char *path, struct parport_joypad *pad
       if (!set_control)
          RARCH_WARN("[Joypad]: Failed to clear nStrobe and nIRQ bits on %s\n", path);
 
-      strlcpy(pad->ident, path, sizeof(settings->input.device_names[0]));
+      strlcpy(pad->ident, path, sizeof(input_device_names[0]));
 
       for (i = 0; i < PARPORT_NUM_BUTTONS; i++)
          pad->button_enable[i] = true;
@@ -232,8 +239,6 @@ static bool parport_joypad_init(void *data)
    bool found_disabled_button            = false;
    char buf[PARPORT_NUM_BUTTONS * 3 + 1] = {0};
    char pin[3 + 1]                       = {0};
-   settings_t *settings                  = config_get_ptr();
-   autoconfig_params_t params            = {{0}};
 
    (void)data;
 
@@ -245,11 +250,9 @@ static bool parport_joypad_init(void *data)
       struct parport_joypad *pad = &parport_pads[i];
 
       pad->fd    = -1;
-      pad->ident = settings->input.device_names[i];
+      pad->ident = input_device_names[i];
 
       snprintf(path, sizeof(path), "/dev/parport%u", i);
-
-      params.idx = i;
 
       if (parport_joypad_init_pad(path, pad))
       {
@@ -293,8 +296,6 @@ static bool parport_joypad_init(void *data)
                RARCH_WARN("[Joypad]: Pin(s) %son %s were low on init, assuming not connected\n", \
                      buf, path);
             }
-            strlcpy(params.name, "Generic Parallel Port device", sizeof(params.name));
-            strlcpy(params.driver, "parport", sizeof(params.driver));
          }
          else
          {
@@ -302,7 +303,16 @@ static bool parport_joypad_init(void *data)
             parport_free_pad(pad);
          }
       }
-      input_config_autoconfigure_joypad(&params);
+
+      if (!input_autoconfigure_connect(
+            "Generic Parallel Port device",
+            NULL,
+            "parport",
+            i,
+            0,
+            0
+            ))
+         input_config_set_device_name(i, "Generic Parallel Port device");
    }
 
    return true;

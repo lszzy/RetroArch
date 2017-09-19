@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -30,10 +30,19 @@
 
 #include <retro_inline.h>
 
-#include "../../driver.h"
-#include "../../general.h"
-#include "../../verbosity.h"
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
+
+#ifdef HAVE_MENU
+#include "../../menu/menu_driver.h"
+#endif
+
 #include "../font_driver.h"
+
+#include "../../configuration.h"
+#include "../../frontend/frontend_driver.h"
+#include "../../verbosity.h"
 
 #include "../common/x11_common.h"
 
@@ -127,26 +136,27 @@ static void xv_init_font(xv_t *xv, const char *font_path, unsigned font_size)
 {
    settings_t *settings = config_get_ptr();
 
-   if (!settings->video.font_enable)
+   if (!settings->bools.video_font_enable)
       return;
 
    if (font_renderer_create_default((const void**)&xv->font_driver, 
-            &xv->font, *settings->path.font 
-            ? settings->path.font : NULL, settings->video.font_size))
+            &xv->font, *settings->paths.path_font 
+            ? settings->paths.path_font : NULL,
+            settings->floats.video_font_size))
    {
       int r, g, b;
-      r = settings->video.msg_color_r * 255;
+      r = settings->floats.video_msg_color_r * 255;
       r = (r < 0 ? 0 : (r > 255 ? 255 : r));
-      g = settings->video.msg_color_g * 255;
+      g = settings->floats.video_msg_color_g * 255;
       g = (g < 0 ? 0 : (g > 255 ? 255 : g));
-      b = settings->video.msg_color_b * 255;
+      b = settings->floats.video_msg_color_b * 255;
       b = (b < 0 ? 0 : (b > 255 ? 255 : b));
 
       xv_calculate_yuv(&xv->font_y, &xv->font_u, &xv->font_v,
             r, g, b);
    }
    else
-      RARCH_LOG("Could not initialize fonts.\n");
+      RARCH_LOG("[XVideo]: Could not initialize fonts.\n");
 }
 
 /* We render @ 2x scale to combat chroma downsampling.
@@ -362,7 +372,7 @@ static void xv_calc_out_rect(bool keep_aspect,
    vp->full_width       = vp_width;
    vp->full_height      = vp_height;
 
-   if (settings->video.scale_integer)
+   if (settings->bools.video_scale_integer)
       video_viewport_get_scaled_integer(vp, vp_width, vp_height,
             video_driver_get_aspect_ratio(), keep_aspect);
    else if (!keep_aspect)
@@ -411,9 +421,10 @@ static void *xv_init(const video_info_t *video,
       const input_driver_t **input, void **input_data)
 {
    unsigned i;
+   int ret;
    XWindowAttributes target;
    char buf[128]                          = {0};
-   char buf_fps[128]                      = {0};
+   char title[128]                        = {0};
    XSetWindowAttributes attributes        = {0};
    XVisualInfo visualtemplate             = {0};
    unsigned width                         = 0;
@@ -435,6 +446,13 @@ static void *xv_init(const video_info_t *video,
    XInitThreads();
 
    g_x11_dpy = XOpenDisplay(NULL);
+
+   if (g_x11_dpy == NULL)
+   {
+      RARCH_ERR("[XVideo]: Cannot connect to the X server.\n");
+      RARCH_ERR("[XVideo]: Check DISPLAY variable and if X is running.\n");
+      goto error;
+   }
    
    av_info = video_viewport_get_system_av_info();
 
@@ -443,7 +461,7 @@ static void *xv_init(const video_info_t *video,
 
    if (!XShmQueryExtension(g_x11_dpy))
    {
-      RARCH_ERR("XVideo: XShm extension not found.\n");
+      RARCH_ERR("[XVideo]: XShm extension not found.\n");
       goto error;
    }
 
@@ -451,8 +469,26 @@ static void *xv_init(const video_info_t *video,
 
    /* Find an appropriate Xv port. */
    xv->port = 0;
-   XvQueryAdaptors(g_x11_dpy,
+   ret = XvQueryAdaptors(g_x11_dpy,
          DefaultRootWindow(g_x11_dpy), &adaptor_count, &adaptor_info);
+
+   if (ret != Success)
+   {
+      if (ret == XvBadExtension)
+         RARCH_ERR("[XVideo]: Xv extension not found.\n");
+      else if (ret == XvBadAlloc)
+         RARCH_ERR("[XVideo]: XvQueryAdaptors() failed to allocate memory.\n");
+      else
+         RARCH_ERR("[XVideo]: Unkown error in XvQueryAdaptors().\n");
+
+      goto error;
+   }
+
+   if (adaptor_count == 0)
+   {
+      RARCH_ERR("[XVideo]: XvQueryAdaptors() found 0 adaptors.\n");
+      goto error;
+   }
 
    for (i = 0; i < adaptor_count; i++)
    {
@@ -473,14 +509,14 @@ static void *xv_init(const video_info_t *video,
       xv->depth    = adaptor_info[i].formats->depth;
       xv->visualid = adaptor_info[i].formats->visual_id;
 
-      RARCH_LOG("XVideo: Found suitable XvPort #%u\n", (unsigned)xv->port);
+      RARCH_LOG("[XVideo]: Found suitable XvPort #%u\n", (unsigned)xv->port);
       break;
    }
    XvFreeAdaptorInfo(adaptor_info);
 
    if (xv->port == 0)
    {
-      RARCH_ERR("XVideo: Failed to find valid XvPort or format.\n");
+      RARCH_ERR("[XVideo]: Failed to find valid XvPort or format.\n");
       goto error;
    }
 
@@ -496,7 +532,7 @@ static void *xv_init(const video_info_t *video,
 
    if (visualmatches < 1 || !visualinfo->visual)
    {
-      RARCH_ERR("XVideo: Unable to find Xv-compatible visual.\n");
+      RARCH_ERR("[XVideo]: Unable to find Xv-compatible visual.\n");
       goto error;
    }
 
@@ -508,10 +544,16 @@ static void *xv_init(const video_info_t *video,
    attributes.event_mask   = StructureNotifyMask | KeyPressMask | 
       KeyReleaseMask | ButtonReleaseMask | ButtonPressMask | DestroyNotify | ClientMessage;
 
-   width      = video->fullscreen ? ( (video->width  == 0) ? 
-         geom->base_width : video->width) : video->width;
-   height     = video->fullscreen ? ((video->height == 0)  ? 
-         geom->base_height : video->height) : video->height;
+   if (video->fullscreen)
+   {
+      width      = (((video->width  == 0) && geom) ? geom->base_width : video->width);
+      height     = (((video->height == 0) && geom) ? geom->base_height : video->height);
+   }
+   else
+   {
+      width      = video->width;
+      height     = video->height;
+   }
    g_x11_win  = XCreateWindow(g_x11_dpy, DefaultRootWindow(g_x11_dpy),
          0, 0, width, height,
          0, xv->depth, InputOutput, visualinfo->visual,
@@ -522,8 +564,10 @@ static void *xv_init(const video_info_t *video,
 
    XMapWindow(g_x11_dpy, g_x11_win);
 
-   if (video_monitor_get_fps(buf, sizeof(buf), NULL, 0))
-      XStoreName(g_x11_dpy, g_x11_win, buf);
+   video_driver_get_window_title(title, sizeof(title));
+
+   if (title[0])
+      XStoreName(g_x11_dpy, g_x11_win, title);
 
    x11_set_window_attr(g_x11_dpy, g_x11_win);
 
@@ -540,15 +584,18 @@ static void *xv_init(const video_info_t *video,
    if (atom != None)
       XvSetPortAttribute(g_x11_dpy, xv->port, atom, 1);
 
-   xv->width  = geom->max_width;
-   xv->height = geom->max_height;
+   if (geom)
+   {
+      xv->width  = geom->max_width;
+      xv->height = geom->max_height;
+   }
 
    xv->image = XvShmCreateImage(g_x11_dpy, xv->port, xv->fourcc,
          NULL, xv->width, xv->height, &xv->shminfo);
 
    if (!xv->image)
    {
-      RARCH_ERR("XVideo: XShmCreateImage failed.\n");
+      RARCH_ERR("[XVideo]: XShmCreateImage failed.\n");
       goto error;
    }
 
@@ -560,20 +607,21 @@ static void *xv_init(const video_info_t *video,
 
    if (!XShmAttach(g_x11_dpy, &xv->shminfo))
    {
-      RARCH_ERR("XVideo: XShmAttach failed.\n");
+      RARCH_ERR("[XVideo]: XShmAttach failed.\n");
       goto error;
    }
    XSync(g_x11_dpy, False);
    memset(xv->image->data, 128, xv->image->data_size);
 
    x11_install_quit_atom();
-   x11_install_sighandlers();
+
+   frontend_driver_install_signal_handler();
 
    xv_set_nonblock_state(xv, !video->vsync);
 
    if (input && input_data)
    {
-      xinput = input_x.init();
+      xinput = input_x.init(settings->arrays.input_joypad_driver);
       if (xinput)
       {
          *input = &input_x;
@@ -584,7 +632,7 @@ static void *xv_init(const video_info_t *video,
    }
 
    xv_init_yuv_tables(xv);
-   xv_init_font(xv, settings->path.font, settings->video.font_size);
+   xv_init_font(xv, settings->paths.path_font, settings->floats.video_font_size);
 
    if (!x11_input_ctx_new(true))
       goto error;
@@ -622,7 +670,7 @@ static bool xv_check_resize(xv_t *xv, unsigned width, unsigned height)
 
       if (xv->image == None)
       {
-         RARCH_ERR("Failed to create image.\n");
+         RARCH_ERR("[XVideo]: Failed to create image.\n");
          return false;
       }
 
@@ -634,7 +682,7 @@ static bool xv_check_resize(xv_t *xv, unsigned width, unsigned height)
 
       if (xv->shminfo.shmid < 0)
       {
-         RARCH_ERR("Failed to init SHM.\n");
+         RARCH_ERR("[XVideo]: Failed to init SHM.\n");
          return false;
       }
 
@@ -644,7 +692,7 @@ static bool xv_check_resize(xv_t *xv, unsigned width, unsigned height)
 
       if (!XShmAttach(g_x11_dpy, &xv->shminfo))
       {
-         RARCH_ERR("Failed to reattch XvShm image.\n");
+         RARCH_ERR("[XVideo]: Failed to reattch XvShm image.\n");
          return false;
       }
       XSync(g_x11_dpy, False);
@@ -669,8 +717,8 @@ static void xv_render_msg(xv_t *xv, const char *msg,
 
    atlas          = xv->font_driver->get_atlas(xv->font);
 
-   msg_base_x     = settings->video.msg_pos_x * width;
-   msg_base_y     = height * (1.0f - settings->video.msg_pos_y);
+   msg_base_x     = settings->floats.video_msg_pos_x * width;
+   msg_base_y     = height * (1.0f - settings->floats.video_msg_pos_y);
 
    luma_index[0]  = xv->luma_index[0];
    luma_index[1]  = xv->luma_index[1];
@@ -772,7 +820,7 @@ static void xv_render_msg(xv_t *xv, const char *msg,
 
 static bool xv_frame(void *data, const void *frame, unsigned width,
       unsigned height, uint64_t frame_count,
-      unsigned pitch, const char *msg)
+      unsigned pitch, const char *msg, video_frame_info_t *video_info)
 {
    XWindowAttributes target;
    xv_t *xv                  = (xv_t*)data;
@@ -790,6 +838,10 @@ static bool xv_frame(void *data, const void *frame, unsigned width,
    xv->vp.full_width  = target.width;
    xv->vp.full_height = target.height;
 
+#ifdef HAVE_MENU
+   menu_driver_frame(video_info);
+#endif
+
    if (msg)
       xv_render_msg(xv, msg, width << 1, height << 1);
 
@@ -799,7 +851,7 @@ static bool xv_frame(void *data, const void *frame, unsigned width,
          true);
    XSync(g_x11_dpy, False);
 
-   x11_update_window_title(NULL);
+   x11_update_title(NULL, video_info);
 
    return true;
 }
@@ -864,7 +916,7 @@ static void xv_set_rotation(void *data, unsigned rotation)
    (void)rotation;
 }
 
-static bool xv_read_viewport(void *data, uint8_t *buffer)
+static bool xv_read_viewport(void *data, uint8_t *buffer, bool is_idle)
 {
    (void)data;
    (void)buffer;

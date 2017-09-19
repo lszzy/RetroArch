@@ -1,5 +1,5 @@
 /* RetroArch - A frontend for libretro.
- *  Copyright (C) 2011-2015 - Andres Suarez
+ *  Copyright (C) 2011-2017 - Andrés Suárez
  *
  * RetroArch is free software: you can redistribute it and/or modify it under the terms
  * of the GNU General Public License as published by the Free Software Found-
@@ -41,7 +41,7 @@ class WIMPSHARED_EXPORT Wimp : public QGuiApplication
     public:
         Wimp(int argc, char *argv[]): QGuiApplication(argc, argv) {}
 
-        /* create the main QT window */
+        /* create the main Qt window */
         int CreateMainWindow();
 
         /* get a pointer to RetroArch settings */

@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2015 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *  Copyright (C) 2012-2015 - Michael Lelli
  * 
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
@@ -20,6 +20,10 @@
 
 #include <boolean.h>
 #include <libretro.h>
+
+#ifdef HAVE_CONFIG_H
+#include "../config.h"
+#endif
 
 void libretro_dummy_retro_init(void);
 
@@ -184,7 +188,7 @@ size_t libretro_imageviewer_retro_get_memory_size(unsigned id);
 
 #endif
 
-#if defined(HAVE_NETWORKGAMEPAD) && defined(HAVE_NETPLAY)
+#if defined(HAVE_NETWORKGAMEPAD) && defined(HAVE_NETWORKING)
 /* Internal networked retropad core. */
 
 void libretro_netretropad_retro_init(void);
@@ -237,6 +241,62 @@ unsigned libretro_netretropad_retro_get_region(void);
 void *libretro_netretropad_retro_get_memory_data(unsigned id);
 
 size_t libretro_netretropad_retro_get_memory_size(unsigned id);
+
+#endif
+
+#if defined(HAVE_V4L2)
+/* Internal video processor core. */
+
+void libretro_videoprocessor_retro_init(void);
+
+void libretro_videoprocessor_retro_deinit(void);
+
+unsigned libretro_videoprocessor_retro_api_version(void);
+
+void libretro_videoprocessor_retro_get_system_info(struct retro_system_info *info);
+
+void libretro_videoprocessor_retro_get_system_av_info(struct retro_system_av_info *info);
+
+void libretro_videoprocessor_retro_set_environment(retro_environment_t cb);
+
+void libretro_videoprocessor_retro_set_video_refresh(retro_video_refresh_t cb);
+
+void libretro_videoprocessor_retro_set_audio_sample(retro_audio_sample_t cb);
+
+void libretro_videoprocessor_retro_set_audio_sample_batch(retro_audio_sample_batch_t cb);
+
+void libretro_videoprocessor_retro_set_input_poll(retro_input_poll_t cb);
+
+void libretro_videoprocessor_retro_set_input_state(retro_input_state_t cb);
+
+void libretro_videoprocessor_retro_set_controller_port_device(unsigned port, unsigned device);
+
+void libretro_videoprocessor_retro_reset(void);
+
+void libretro_videoprocessor_retro_run(void);
+
+size_t libretro_videoprocessor_retro_serialize_size(void);
+
+bool libretro_videoprocessor_retro_serialize(void *data, size_t size);
+
+bool libretro_videoprocessor_retro_unserialize(const void *data, size_t size);
+
+void libretro_videoprocessor_retro_cheat_reset(void);
+
+void libretro_videoprocessor_retro_cheat_set(unsigned index, bool enabled, const char *code);
+
+bool libretro_videoprocessor_retro_load_game(const struct retro_game_info *game);
+
+bool libretro_videoprocessor_retro_load_game_special(unsigned game_type,
+      const struct retro_game_info *info, size_t num_info);
+
+void libretro_videoprocessor_retro_unload_game(void);
+
+unsigned libretro_videoprocessor_retro_get_region(void);
+
+void *libretro_videoprocessor_retro_get_memory_data(unsigned id);
+
+size_t libretro_videoprocessor_retro_get_memory_size(unsigned id);
 
 #endif
 

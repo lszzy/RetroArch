@@ -1,6 +1,6 @@
 /*  RetroArch - A frontend for libretro.
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2016 - Daniel De Matteis
+ *  Copyright (C) 2011-2017 - Daniel De Matteis
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -14,16 +14,26 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
-
-#ifdef HAVE_CONFIG_H
-#include "../../config.h"
-#endif
-
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <assert.h>
+#include <retro_assert.h>
+#include <compat/msvc.h>
+
+#include <boolean.h>
+#include <queues/fifo_queue.h>
+#include <rthreads/rthreads.h>
+#include <gfx/scaler/scaler.h>
+#include <gfx/video_frame.h>
+#include <file/config_file.h>
+#include <audio/audio_resampler.h>
+#include <audio/conversion/float_to_s16.h>
+#include <audio/conversion/s16_to_float.h>
+
+#ifdef HAVE_CONFIG_H
+#include "../../config.h"
+#endif
 
 #ifdef FFEMU_PERF
 #include <time.h>
@@ -52,22 +62,12 @@ extern "C" {
 }
 #endif
 
-#include <compat/msvc.h>
-
-#include <boolean.h>
-#include <queues/fifo_queue.h>
-#include <rthreads/rthreads.h>
-#include <gfx/scaler/scaler.h>
-#include <file/config_file.h>
-#include <conversion/float_to_s16.h>
-#include <conversion/s16_to_float.h>
-
-#include "../../general.h"
-#include "../../verbosity.h"
-#include "../../audio/audio_resampler_driver.h"
 #include "../record_driver.h"
 
-#include "../../gfx/video_frame.h"
+#include "../../configuration.h"
+#include "../../gfx/video_driver.h"
+#include "../../verbosity.h"
+
 
 #ifndef PIX_FMT_RGB32
 #define PIX_FMT_RGB32 AV_PIX_FMT_RGB32
@@ -141,7 +141,7 @@ struct ff_audio_info
     * Could use libswresample, but it doesn't support floating point ratios.
     * Use either S16 or (planar) float for simplicity.
     */
-   const rarch_resampler_t *resampler;
+   const retro_resampler_t *resampler;
    void *resampler_data;
 
    bool use_float;
@@ -180,7 +180,7 @@ struct ff_config_param
    unsigned threads;
    unsigned frame_drop_ratio;
    unsigned sample_rate;
-   unsigned scale_factor;
+   float scale_factor;
 
    bool audio_enable;
    /* Keep same naming conventions as libavcodec. */
@@ -334,9 +334,9 @@ static bool ffmpeg_init_audio(ffmpeg_t *handle)
       audio->codec->sample_rate = params->sample_rate;
       audio->codec->time_base = av_d2q(1.0 / params->sample_rate, 1000000);
 
-      rarch_resampler_realloc(&audio->resampler_data,
+      retro_resampler_realloc(&audio->resampler_data,
             &audio->resampler,
-            settings->audio.resampler,
+            settings->arrays.audio_resampler,
             audio->ratio);
    }
    else
@@ -474,8 +474,8 @@ static bool ffmpeg_init_video(ffmpeg_t *handle)
    /* Useful to set scale_factor to 2 for chroma subsampled formats to
     * maintain full chroma resolution. (Or just use 4:4:4 or RGB ...)
     */
-   param->out_width  *= params->scale_factor;
-   param->out_height *= params->scale_factor;
+   param->out_width  = (float)param->out_width  * params->scale_factor;
+   param->out_height = (float)param->out_height * params->scale_factor;
 
    video->codec->codec_type          = AVMEDIA_TYPE_VIDEO;
    video->codec->width               = param->out_width;
@@ -564,7 +564,7 @@ static bool ffmpeg_init_config(struct ff_config_param *params,
       params->audio_enable = true;
 
    config_get_uint(params->conf, "sample_rate", &params->sample_rate);
-   config_get_uint(params->conf, "scale_factor", &params->scale_factor);
+   config_get_float(params->conf, "scale_factor", &params->scale_factor);
 
    params->audio_qscale = config_get_int(params->conf, "audio_global_quality",
          &params->audio_global_quality);
@@ -672,7 +672,7 @@ static bool init_thread(ffmpeg_t *handle)
    handle->can_sleep = true;
    handle->thread = sthread_create(ffmpeg_thread, handle);
 
-   assert(handle->lock && handle->cond_lock &&
+   retro_assert(handle->lock && handle->cond_lock &&
       handle->cond && handle->audio_fifo &&
       handle->attr_fifo && handle->video_fifo && handle->thread);
 
@@ -758,8 +758,10 @@ static void ffmpeg_free(void *data)
    if (handle->config.audio_opts)
       av_dict_free(&handle->config.audio_opts);
 
-   rarch_resampler_freep(&handle->audio.resampler,
-         &handle->audio.resampler_data);
+   if (handle->audio.resampler && handle->audio.resampler_data)
+      handle->audio.resampler->free(handle->audio.resampler_data);
+   handle->audio.resampler      = NULL;
+   handle->audio.resampler_data = NULL;
 
    av_free(handle->audio.float_conv);
    av_free(handle->audio.resample_out);
@@ -1184,10 +1186,10 @@ static void ffmpeg_audio_resample(ffmpeg_t *handle,
       info.input_frames = aud->frames;
       info.ratio        = handle->audio.ratio;
 
-      rarch_resampler_process(handle->audio.resampler,
-            handle->audio.resampler_data, &info);
-      aud->data   = handle->audio.resample_out;
-      aud->frames = info.output_frames;
+      handle->audio.resampler->process(handle->audio.resampler_data, &info);
+
+      aud->data         = handle->audio.resample_out;
+      aud->frames       = info.output_frames;
 
       if (!handle->audio.use_float)
       {
@@ -1368,14 +1370,14 @@ static bool ffmpeg_finalize(void *data)
 static void ffmpeg_thread(void *data)
 {
    size_t audio_buf_size;
-   void *audio_buf;
-   ffmpeg_t *ff = (ffmpeg_t*)data;
-
+   void *audio_buf = NULL;
+   ffmpeg_t *ff    = (ffmpeg_t*)data;
    /* For some reason, FFmpeg has a tendency to crash 
     * if we don't overallocate a bit. */
    void *video_buf = av_malloc(2 * ff->params.fb_width *
          ff->params.fb_height * ff->video.pix_size);
-   assert(video_buf);
+
+   retro_assert(video_buf);
 
    audio_buf_size = ff->config.audio_enable ? 
       (ff->audio.codec->frame_size * ff->params.channels * sizeof(int16_t)) : 0;
@@ -1412,7 +1414,7 @@ static void ffmpeg_thread(void *data)
          slock_unlock(ff->cond_lock);
       }
 
-      if (avail_video)
+      if (avail_video && video_buf)
       {
          slock_lock(ff->lock);
          fifo_read(ff->attr_fifo, &attr_buf, sizeof(attr_buf));
@@ -1425,7 +1427,7 @@ static void ffmpeg_thread(void *data)
          ffmpeg_push_video_thread(ff, &attr_buf);
       }
 
-      if (avail_audio)
+      if (avail_audio && audio_buf)
       {
          struct ffemu_audio_data aud = {0};
 

@@ -1,4 +1,4 @@
-/* Copyright  (C) 2010-2015 The RetroArch team
+/* Copyright  (C) 2010-2017 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this file (rhash.c).
@@ -191,7 +191,7 @@ void sha256_hash(char *s, const uint8_t *in, size_t size)
    } shahash;
 
    sha256_init(&sha);
-   sha256_chunk(&sha, in, size);
+   sha256_chunk(&sha, in, (unsigned)size);
    sha256_final(&sha);
    sha256_subhash(&sha, shahash.u32);
 
@@ -201,7 +201,7 @@ void sha256_hash(char *s, const uint8_t *in, size_t size)
 
 #ifndef HAVE_ZLIB
 /* Zlib CRC32. */
-static const uint32_t crc32_table[256] = {
+static const uint32_t crc32_hash_table[256] = {
     0x00000000, 0x77073096, 0xee0e612c, 0x990951ba, 0x076dc419, 0x706af48f,
     0xe963a535, 0x9e6495a3, 0x0edb8832, 0x79dcb8a4, 0xe0d5e91e, 0x97d2d988,
     0x09b64c2b, 0x7eb17cbd, 0xe7b82d07, 0x90bf1d91, 0x1db71064, 0x6ab020f2,
@@ -249,7 +249,7 @@ static const uint32_t crc32_table[256] = {
 
 uint32_t crc32_adjust(uint32_t checksum, uint8_t input)
 {
-   return ((checksum >> 8) & 0x00ffffff) ^ crc32_table[(checksum ^ input) & 0xff];
+   return ((checksum >> 8) & 0x00ffffff) ^ crc32_hash_table[(checksum ^ input) & 0xff];
 }
 
 uint32_t crc32_calculate(const uint8_t *data, size_t length)
@@ -508,19 +508,21 @@ static void SHA1Input(SHA1Context *context,
 
 int sha1_calculate(const char *path, char *result)
 {
-   unsigned char buff[4096] = {0};
    SHA1Context sha;
-   int rv = 1;
+   unsigned char buff[4096];
+   int rv    = 1;
    RFILE *fd = filestream_open(path, RFILE_MODE_READ, -1);
 
    if (!fd)
       goto error;
 
+   buff[0] = '\0';
+
    SHA1Reset(&sha);
 
    do
    {
-      rv = filestream_read(fd, buff, 4096);
+      rv = (int)filestream_read(fd, buff, 4096);
       if (rv < 0)
          goto error;
 
